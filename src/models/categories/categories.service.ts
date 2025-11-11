@@ -1,55 +1,141 @@
-import { CategoryItem } from '@/types';
 import { Injectable } from '@nestjs/common';
-import { ExpensesService } from '../expenses/expenses.service';
+import { TransactionsService } from '../transactions/transactions.service';
+import { Tabs } from '@/enums';
+import { CategoryItem, CreateCategoryItem } from '@/types';
 
 @Injectable()
 export class CategoriesService {
-  constructor(private readonly expensesService: ExpensesService) {}
+  private categories: CategoryItem[] = [];
 
-  getCategories() {
-    const categoryTitles = [
-      'Auto',
-      'Transport',
-      'Food',
-      'Shopping',
-      'Entertainments',
-      'Other',
-      'Courses',
-    ];
+  constructor(private readonly transactionsService: TransactionsService) {
+    this.categories = this.initCategories();
+  }
 
-    const expenses = this.expensesService.getExpenses();
+  private seed: CategoryItem[] = [
+    {
+      id: 1,
+      title: 'Auto',
+      revenues: [],
+      expenses: [],
+      totalExpenses: 0,
+      totalRevenues: 0,
+      icon: 'pi pi-table',
+    },
+    {
+      id: 2,
+      title: 'Transport',
+      revenues: [],
+      expenses: [],
+      totalExpenses: 0,
+      totalRevenues: 0,
+      icon: 'pi pi-table',
+    },
+    {
+      id: 3,
+      title: 'Food',
+      revenues: [],
+      expenses: [],
+      totalExpenses: 0,
+      totalRevenues: 0,
+      icon: 'pi pi-table',
+    },
+    {
+      id: 4,
+      title: 'Shopping',
+      revenues: [],
+      expenses: [],
+      totalExpenses: 0,
+      totalRevenues: 0,
+      icon: 'pi pi-table',
+    },
+    {
+      id: 5,
+      title: 'Entertainments',
+      revenues: [],
+      expenses: [],
+      totalExpenses: 0,
+      totalRevenues: 0,
+      icon: 'pi pi-table',
+    },
+    {
+      id: 6,
+      title: 'Other',
+      revenues: [],
+      expenses: [],
+      totalExpenses: 0,
+      totalRevenues: 0,
+      icon: 'pi pi-table',
+    },
+    {
+      id: 7,
+      title: 'Courses',
+      revenues: [],
+      expenses: [],
+      totalExpenses: 0,
+      totalRevenues: 0,
+      icon: 'pi pi-table',
+    },
+    {
+      id: 8,
+      title: 'Medicine',
+      revenues: [],
+      expenses: [],
+      totalExpenses: 0,
+      totalRevenues: 0,
+      icon: 'pi pi-table',
+    },
+  ];
 
-    const categories: CategoryItem[] = Object.values(
-      expenses.reduce<Record<number, CategoryItem>>((acc, expense) => {
-        const catId = expense.category.id;
-
-        if (!acc[catId]) {
-          acc[catId] = {
-            id: catId,
-            title: expense.category.title,
-            expensesAmount: 0,
-            expenses: [],
-          };
-        }
-
-        acc[catId].expenses.push(expense);
-        acc[catId].expensesAmount += expense.amount;
-
-        return acc;
-      }, {}),
+  private initCategories(): CategoryItem[] {
+    const byId: Record<number, CategoryItem> = Object.fromEntries(
+      this.seed.map((c) => [
+        c.id,
+        { ...c, revenues: [], expenses: [], totalExpenses: 0, totalRevenues: 0 },
+      ]),
     );
 
-    categoryTitles.forEach((title, id) => {
-      if (!categories.find((c) => c.id === id)) {
-        categories.push({
-          id,
-          title,
-          expensesAmount: 0,
-          expenses: [],
-        });
-      }
-    });
+    const transactions = this.transactionsService.getTransactions();
 
-    return categories;
+    for (const t of transactions) {
+      const cat = byId[t.categoryId];
+      if (!cat) continue;
+
+      if (t.type === Tabs.Expenses) {
+        cat.expenses.push(t);
+        cat.totalExpenses += t.amount;
+      } else {
+        cat.revenues.push(t);
+        cat.totalRevenues += t.amount;
+      }
+    }
+
+    return Object.values(byId);
+  }
+
+  getCategories(): CategoryItem[] {
+    return this.categories;
+  }
+
+  createCategory(category: CreateCategoryItem) {
+    const newCategory: CategoryItem = {
+      id: this.seed.length + 1,
+      ...category,
+      revenues: [],
+      expenses: [],
+      totalExpenses: 0,
+      totalRevenues: 0,
+    };
+    this.seed.push(newCategory);
+    this.categories = this.initCategories();
+  }
+
+  deleteCategory(id: number) {
+    this.seed = this.seed.filter((c) => c.id !== id);
+    this.categories = this.initCategories();
+  }
+
+  updateCategory(id: number, category: CreateCategoryItem) {
+    this.seed = this.seed.map((c) => (c.id === id ? { ...c, ...category } : c));
+    this.categories = this.initCategories();
   }
 }

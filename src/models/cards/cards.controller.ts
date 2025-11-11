@@ -1,5 +1,6 @@
-import { Controller, Get } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Patch, Delete } from '@nestjs/common';
 import { CardsService } from './cards.service';
+import { CreateCard } from '@/types/models/cards';
 
 @Controller('balances')
 export class CardsController {
@@ -10,6 +11,23 @@ export class CardsController {
     return this.cardsService.getCards();
   }
 
-  @Get('id')
-  getCard(id: number) {}
+  @Get(':id')
+  getCard(@Param('id') id: string) {
+    return this.cardsService.getCard(Number(id));
+  }
+
+  @Post()
+  addCard(@Body() card: CreateCard) {
+    return this.cardsService.addCard(card);
+  }
+
+  @Delete(':id')
+  deleteCard(@Param('id') id: string) {
+    return this.cardsService.deleteCard(Number(id));
+  }
+
+  @Patch(':id')
+  updateCard(@Param('id') id: string, @Body() card: CreateCard) {
+    return this.cardsService.updateCard(Number(id), card);
+  }
 }

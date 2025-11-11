@@ -1,9 +1,45 @@
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { SubscribeItem } from '@/types';
-import { Injectable } from '@nestjs/common';
 
 @Injectable()
 export class SubscribtionsService {
-  getSubscribes() {
+  private subscribes: SubscribeItem[] = [];
+
+  constructor() {
+    this.subscribes = this.generateInitialSubscribes();
+  }
+
+  getAll(): SubscribeItem[] {
+    return this.subscribes;
+  }
+
+  getById(id: number): SubscribeItem {
+    const item = this.subscribes.find((s) => s.id === id);
+    if (!item) throw new NotFoundException(`Subscription with id=${id} not found`);
+    return item;
+  }
+
+  create(data: Omit<SubscribeItem, 'id'>): SubscribeItem {
+    const id = this.subscribes.length ? Math.max(...this.subscribes.map((s) => s.id)) + 1 : 1;
+    const newSub: SubscribeItem = { id, ...data };
+    this.subscribes.push(newSub);
+    return newSub;
+  }
+
+  update(id: number, data: Partial<SubscribeItem>): SubscribeItem {
+    const index = this.subscribes.findIndex((s) => s.id === id);
+    if (index === -1) throw new NotFoundException(`Subscription with id=${id} not found`);
+    this.subscribes[index] = { ...this.subscribes[index], ...data };
+    return this.subscribes[index];
+  }
+
+  delete(id: number): void {
+    const index = this.subscribes.findIndex((s) => s.id === id);
+    if (index === -1) throw new NotFoundException(`Subscription with id=${id} not found`);
+    this.subscribes.splice(index, 1);
+  }
+
+  private generateInitialSubscribes(): SubscribeItem[] {
     const services = [
       { name: 'Figma', desc: 'Pro' },
       { name: 'GitHub', desc: 'Team' },
@@ -21,24 +57,18 @@ export class SubscribtionsService {
       { name: 'GorkiFlowers', desc: '' },
     ];
 
-    function randomDate(pastYears: number = 1, futureYears: number = 1) {
-      const start = new Date();
-      start.setFullYear(start.getFullYear() - pastYears);
+    const now = new Date();
 
-      const end = new Date();
-      end.setFullYear(end.getFullYear() + futureYears);
-
-      const date = new Date(start.getTime() + Math.random() * (end.getTime() - start.getTime()));
-      return date.toISOString().split('T')[0];
+    function randomFutureDate(daysAhead = 21) {
+      const future = new Date(now);
+      future.setDate(now.getDate() + Math.floor(Math.random() * daysAhead) + 1);
+      return future.toISOString().split('T')[0];
     }
 
-    function randomPastDate(pastYears: number = 1) {
-      const start = new Date();
-      start.setFullYear(start.getFullYear() - pastYears);
-
-      const now = new Date();
-      const date = new Date(start.getTime() + Math.random() * (now.getTime() - start.getTime()));
-      return date.toISOString().split('T')[0];
+    function randomPastDate(daysBack = 30) {
+      const past = new Date(now);
+      past.setDate(now.getDate() - Math.floor(Math.random() * daysBack) - 1);
+      return past.toISOString().split('T')[0];
     }
 
     function randomAmount(type: 'monthly' | 'yearly') {
@@ -47,50 +77,22 @@ export class SubscribtionsService {
         : +(Math.random() * 500 + 50).toFixed(0);
     }
 
-    const subscribes: SubscribeItem[] = Array.from({ length: 100 }, (_, id) => {
+    const subscribes: SubscribeItem[] = Array.from({ length: 30 }, (_, id) => {
       const service = services[Math.floor(Math.random() * services.length)];
       const type: 'monthly' | 'yearly' = Math.random() > 0.7 ? 'yearly' : 'monthly';
+
+      const isFuture = Math.random() < 0.4; // 40% подписок — с будущей датой
 
       return {
         id,
         amount: randomAmount(type),
-        subscribeDate: randomDate(),
+        subscribeDate: isFuture ? randomFutureDate() : randomPastDate(),
         lastCharge: randomPastDate(),
         subscribeName: service.name,
         type,
         description: service.desc,
       };
     });
-
-    subscribes.push(
-      {
-        id: 100,
-        amount: 500,
-        subscribeDate: '2025-10-17',
-        lastCharge: '2025-09-17',
-        subscribeName: 'Figma',
-        type: 'monthly',
-        description: 'Pro',
-      },
-      {
-        id: 101,
-        amount: 2301,
-        subscribeDate: '2025-10-19',
-        lastCharge: '2024-10-19',
-        subscribeName: 'GorkiFlowers',
-        type: 'yearly',
-        description: 'Full Suite',
-      },
-      {
-        id: 102,
-        amount: 112,
-        subscribeDate: '2025-10-18',
-        lastCharge: '2025-09-18',
-        subscribeName: 'GitHub',
-        type: 'monthly',
-        description: 'Team',
-      },
-    );
 
     return subscribes;
   }
