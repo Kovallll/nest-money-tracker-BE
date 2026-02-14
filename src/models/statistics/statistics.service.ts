@@ -11,18 +11,18 @@ export class StatisticsService {
    * monthsLimit=true — включаем месяцы с Jan..текущий (без будущих).
    * top — можно ограничить топ-N категорий по сумме расходов (опционально).
    */
-  getCategoryExpenseLineChartsByYear(params?: {
+  async getCategoryExpenseLineChartsByYear(params?: {
     year?: number;
     monthsLimitToCurrent?: boolean;
     top?: number;
     locale?: string;
-  }): CategoryLineChartDto[] {
-    const year = params?.year ?? new Date().getFullYear();
+  }) {
+    const year = 2025;
     const locale = params?.locale ?? 'en';
     const limitToCurrent = params?.monthsLimitToCurrent ?? true;
     const top = params?.top;
 
-    const categories = this.categoriesService.getCategories();
+    const categories = await this.categoriesService.getCategories();
     const now = new Date();
     const lastMonthIndex = limitToCurrent && year === now.getFullYear() ? now.getMonth() : 11;
 
@@ -80,11 +80,7 @@ export class StatisticsService {
     return typeof top === 'number' ? sorted.slice(0, top) : sorted;
   }
 
-  getExpensesOverview(params?: {
-    monthsBar?: number;
-    topK?: number;
-    locale?: string;
-  }): ExpensesOverviewDto {
+  async getExpensesOverview(params?: { monthsBar?: number; topK?: number; locale?: string }) {
     const monthsBar = params?.monthsBar ?? 6;
     const topK = params?.topK ?? 5;
     const locale = params?.locale ?? 'en';
@@ -99,7 +95,7 @@ export class StatisticsService {
     const lineMonths = buildLastMonths(12, now);
     const lineLabels = lineMonths.map((d) => d.toLocaleString(locale, { month: 'short' }));
 
-    const categories = this.categoriesService.getCategories();
+    const categories = await this.categoriesService.getCategories();
 
     const pieLabels: string[] = [];
     const pieData: number[] = [];
@@ -112,10 +108,8 @@ export class StatisticsService {
         })
         .reduce((s, t) => s + t.amount, 0);
 
-      if (sum > 0) {
-        pieLabels.push(cat.title);
-        pieData.push(+sum.toFixed(2));
-      }
+      pieLabels.push(cat.title);
+      pieData.push(+sum.toFixed(2));
     }
 
     const palette = [
@@ -136,7 +130,7 @@ export class StatisticsService {
 
     // ---- Bar: по категориям за последние N месяцев (топ-K по сумме)
     // Посчитаем суммы по каждой категории по месяцам
-    type CatSeries = { id: number; title: string; series: number[]; total: number };
+    type CatSeries = { id: string; title: string; series: number[]; total: number };
     const barSeries: CatSeries[] = categories.map((cat) => {
       const series = barMonths.map((m) => {
         const sum = (cat.expenses ?? [])
@@ -215,3 +209,4 @@ function hexWithAlpha(hex: string, alpha = 1) {
 function sum(arr: number[]) {
   return arr.reduce((s, v) => s + v, 0);
 }
+

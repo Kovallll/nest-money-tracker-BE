@@ -14,27 +14,30 @@ export class SubscribtionsService {
   }
 
   getById(id: number): SubscribeItem {
-    const item = this.subscribes.find((s) => s.id === id);
+    const item = this.subscribes.find((s) => s.id === String(id));
     if (!item) throw new NotFoundException(`Subscription with id=${id} not found`);
     return item;
   }
 
   create(data: Omit<SubscribeItem, 'id'>): SubscribeItem {
-    const id = this.subscribes.length ? Math.max(...this.subscribes.map((s) => s.id)) + 1 : 1;
-    const newSub: SubscribeItem = { id, ...data };
+    // Ensure ids are compared as numbers for max
+    const id = this.subscribes.length
+      ? Math.max(...this.subscribes.map((s) => Number(s.id))) + 1
+      : 1;
+    const newSub: SubscribeItem = { id: String(id), ...data };
     this.subscribes.push(newSub);
     return newSub;
   }
 
   update(id: number, data: Partial<SubscribeItem>): SubscribeItem {
-    const index = this.subscribes.findIndex((s) => s.id === id);
+    const index = this.subscribes.findIndex((s) => s.id === String(id));
     if (index === -1) throw new NotFoundException(`Subscription with id=${id} not found`);
     this.subscribes[index] = { ...this.subscribes[index], ...data };
     return this.subscribes[index];
   }
 
   delete(id: number): void {
-    const index = this.subscribes.findIndex((s) => s.id === id);
+    const index = this.subscribes.findIndex((s) => s.id === String(id));
     if (index === -1) throw new NotFoundException(`Subscription with id=${id} not found`);
     this.subscribes.splice(index, 1);
   }
@@ -84,7 +87,7 @@ export class SubscribtionsService {
       const isFuture = Math.random() < 0.4; // 40% подписок — с будущей датой
 
       return {
-        id,
+        id: String(id),
         amount: randomAmount(type),
         subscribeDate: isFuture ? randomFutureDate() : randomPastDate(),
         lastCharge: randomPastDate(),
@@ -97,3 +100,4 @@ export class SubscribtionsService {
     return subscribes;
   }
 }
+

@@ -1,16 +1,19 @@
-import { Transaction } from './transactions';
-
 export interface CategoryItem {
-  id: number;
+  id: string;
   title: string;
-  expenses: Transaction[];
-  revenues: Transaction[];
+  icon: string;
+  color?: string;
+  expenses: any[];
+  revenues: any[];
   totalExpenses: number;
   totalRevenues: number;
-  icon: string;
 }
 
 export interface CreateCategoryItem {
-  title: string;
-  icon: string;
+  id?: string;
+  name: string;
+  icon?: string;
+  color?: string;
+  examples?: string[];
 }
+

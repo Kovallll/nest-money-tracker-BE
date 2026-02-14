@@ -35,7 +35,7 @@ export class TransactionsService {
 
     const paymentMethods = ['Card', 'Cash', 'Bank Transfer', 'Crypto'];
     const transactionTypes = ['Purchase', 'Refund', 'Transfer', 'Deposit'];
-    const statuses = ['Completed', 'Pending', 'Failed'];
+    const statuses = ['completed', 'pending', 'cancelled'];
 
     const startDate = new Date('2024-05-01');
     const endDate = new Date();
@@ -43,7 +43,7 @@ export class TransactionsService {
 
     for (let i = 0; i < 500; i++) {
       const isIncome = Math.random() < 0.3;
-      const type = isIncome ? Tabs.Revenue : Tabs.Expenses;
+      const type = isIncome ? Tabs.Revenues : Tabs.Expenses;
       const category = isIncome
         ? categories.income[Math.floor(Math.random() * categories.income.length)]
         : categories.expense[Math.floor(Math.random() * categories.expense.length)];
@@ -63,14 +63,16 @@ export class TransactionsService {
         cardId: Math.floor(Math.random() * 5) + 1,
         categoryId: Math.floor(Math.random() * 7),
         title,
-        category,
         amount,
         date: randomDate.toISOString().split('T')[0],
         type,
         paymentMethod: paymentMethods[Math.floor(Math.random() * paymentMethods.length)],
         transactionType: transactionTypes[Math.floor(Math.random() * transactionTypes.length)],
         receipt: `receipt-${idCounter}.pdf`,
-        status: statuses[Math.floor(Math.random() * statuses.length)],
+        status: statuses[Math.floor(Math.random() * statuses.length)] as
+          | 'cancelled'
+          | 'pending'
+          | 'completed',
       });
     }
   }
@@ -104,3 +106,4 @@ export class TransactionsService {
     return this.transactions[index];
   }
 }
+

@@ -1,5 +1,5 @@
 export interface CategoryLineChartDto {
-  categoryId: number;
+  categoryId: string;
   title: string;
   labels: string[];
   datasets: Array<{
@@ -45,3 +45,4 @@ export interface ExpensesOverviewDto {
     topK: number;
   };
 }
+

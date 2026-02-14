@@ -48,14 +48,15 @@ export class ExpensesService {
       const categoryTitle = categoryTitles[categoryId];
 
       return {
-        id: i,
+        id: String(i),
         amount: randomAmount(10, 1000),
         date: randomDate(),
         title: randomTitle(categoryTitle),
-        category: { id: categoryId, title: categoryTitle },
+        category: { id: String(categoryId), title: categoryTitle },
       };
     });
 
     return expenses;
   }
 }
+

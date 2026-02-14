@@ -52,7 +52,7 @@ export class GoalsService {
       const goalBudget = +(targetBudget + Math.random() * 100).toFixed(2);
 
       return {
-        id,
+        id: String(id),
         targetBudget,
         goalBudget,
         startDate,
@@ -67,7 +67,7 @@ export class GoalsService {
   }
 
   getGoalById(id: number): GoalItem {
-    const goal = this.goals.find((g) => g.id === id);
+    const goal = this.goals.find((g) => g.id === String(id));
     if (!goal) {
       throw new NotFoundException(`Goal with id ${id} not found`);
     }
@@ -75,16 +75,17 @@ export class GoalsService {
   }
 
   createGoal(data: Omit<GoalItem, 'id'>): GoalItem {
+    const id = this.goals.length ? Math.max(...this.goals.map((s) => Number(s.id))) + 1 : 1;
     const newGoal: GoalItem = {
       ...data,
-      id: this.goals.length ? Math.max(...this.goals.map((g) => g.id)) + 1 : 1,
+      id: String(id),
     };
     this.goals.push(newGoal);
     return newGoal;
   }
 
   updateGoal(id: number, data: Partial<GoalItem>): GoalItem {
-    const index = this.goals.findIndex((g) => g.id === id);
+    const index = this.goals.findIndex((g) => g.id === String(id));
     if (index === -1) {
       throw new NotFoundException(`Goal with id ${id} not found`);
     }
@@ -94,10 +95,11 @@ export class GoalsService {
   }
 
   deleteGoal(id: number): void {
-    const index = this.goals.findIndex((g) => g.id === id);
+    const index = this.goals.findIndex((g) => g.id === String(id));
     if (index === -1) {
       throw new NotFoundException(`Goal with id ${id} not found`);
     }
     this.goals.splice(index, 1);
   }
 }
+

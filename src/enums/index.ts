@@ -1,10 +1,11 @@
 export enum TransactionType {
-  Revenue = 'Revenue',
-  Expenses = 'Expenses',
+  Revenues = 'revenue',
+  Expenses = 'expense',
 }
 
 export enum Tabs {
   All = 'All',
   Expenses = TransactionType.Expenses,
-  Revenue = TransactionType.Revenue,
+  Revenues = TransactionType.Revenues,
 }
+

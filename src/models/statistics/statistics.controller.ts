@@ -8,12 +8,12 @@ export class StatisticsController {
   constructor(private readonly stats: StatisticsService) {}
 
   @Get('categories/line/year')
-  getCategoriesLineByYear(
+  async getCategoriesLineByYear(
     @Query('year') year?: string,
     @Query('limitToCurrent') limitToCurrent?: 'true' | 'false',
     @Query('top') top?: string,
     @Query('locale') locale?: string,
-  ): CategoryLineChartDto[] {
+  ) {
     return this.stats.getCategoryExpenseLineChartsByYear({
       year: year ? Number(year) : undefined,
       monthsLimitToCurrent: limitToCurrent !== 'false',
@@ -23,11 +23,11 @@ export class StatisticsController {
   }
 
   @Get('expenses/overview')
-  getExpensesOverview(
+  async getExpensesOverview(
     @Query('monthsBar') monthsBar?: string,
     @Query('topK') topK?: string,
     @Query('locale') locale?: string,
-  ): ExpensesOverviewDto {
+  ) {
     return this.stats.getExpensesOverview({
       monthsBar: monthsBar ? Number(monthsBar) : undefined,
       topK: topK ? Number(topK) : undefined,
@@ -35,3 +35,4 @@ export class StatisticsController {
     });
   }
 }
+

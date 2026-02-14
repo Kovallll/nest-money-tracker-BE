@@ -1,17 +1,19 @@
 export type Transaction = {
   id: number;
   userId: number;
-  cardId: number;
-  categoryId: number;
+  cardId?: number | null;
+  categoryId?: number | null;
   title: string;
-  category: string;
   amount: number;
   date: string;
-  type: string;
-  paymentMethod: string;
-  transactionType: string;
-  receipt: string;
-  status: string;
+  type: 'expense' | 'revenue';
+  paymentMethod?: string;
+  transactionType?: string;
+  receipt?: string;
+  status: 'pending' | 'completed' | 'cancelled';
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type TransactionCreate = Omit<Transaction, 'id' | 'userId' | 'cardId' | 'categoryId'>;
+

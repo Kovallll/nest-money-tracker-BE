@@ -7,9 +7,13 @@ import { GoalsModule } from './models/goals/goals.module';
 import { ExpensesModule } from './models/expenses/expenses.module';
 import { StatisticsModule } from './models/statistics/statistics.module';
 import { SubscribtionsModule } from './models/subscribtions/subscribtions.module';
-import { UserModule } from './models/user/user.module';
+import { UsersModule } from './users/users.module';
 import { CategoriesModule } from './models/categories/categories.module';
-
+import { PgModule } from './pg/pg.module';
+import { ConfigModule } from '@nestjs/config';
+import { CategorizerModule } from './categorizer/categorizer.module';
+import { AuthModule } from './auth/auth.module';
+import { PushModule } from './push/push.module';
 @Module({
   controllers: [AppController],
   providers: [AppService],
@@ -20,8 +24,14 @@ import { CategoriesModule } from './models/categories/categories.module';
     ExpensesModule,
     StatisticsModule,
     SubscribtionsModule,
-    UserModule,
+    UsersModule,
     CategoriesModule,
+    PgModule,
+    CategorizerModule,
+    AuthModule,
+    PushModule,
+    ConfigModule.forRoot({ isGlobal: true }),
   ],
 })
 export class AppModule {}
+

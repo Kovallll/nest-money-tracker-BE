@@ -1,0 +1,64 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:15
+    container_name: pg
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: mydb
+    ports:
+      - '5432:5432'
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U user -d mydb']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  ml-service:
+    build: ./ml-service
+    container_name: ml
+    environment:
+      DATABASE_URL: postgres://user:pass@db:5432/mydb
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ml_models:/app/models
+    expose:
+      - '50051'
+
+  api:
+    build: .
+    container_name: api
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - ml-service
+    ports:
+      - '5000:5000'
+    volumes:
+      - ./ml-service/categorizer.proto:/app/proto/categorizer.proto:ro
+
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - '5050:80'
+    depends_on:
+      - db
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+volumes:
+  pg_data:
+  pgadmin_data:
+  ml_models:

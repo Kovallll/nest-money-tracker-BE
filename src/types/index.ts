@@ -12,7 +12,7 @@ export type User = {
 };
 
 export interface ExpenseItem {
-  id: number;
+  id: string;
   category: Pick<CategoryItem, 'id' | 'title'>;
   amount: number;
   date: string;
@@ -20,7 +20,7 @@ export interface ExpenseItem {
 }
 
 export interface GoalItem {
-  id: number;
+  id: string;
   targetBudget: number;
   goalBudget: number;
   startDate: string;
@@ -29,7 +29,7 @@ export interface GoalItem {
 }
 
 export interface SubscribeItem {
-  id: number;
+  id: string;
   amount: number;
   subscribeDate: string;
   subscribeName: string;
@@ -37,3 +37,4 @@ export interface SubscribeItem {
   type: string;
   description?: string;
 }
+
