@@ -1,4 +1,3 @@
-// api/src/push/push.controller.ts
 import { Controller, Post, Get, Body, Param } from '@nestjs/common';
 import { PushService } from './push.service';
 
@@ -26,5 +25,13 @@ export class PushController {
   @Post(':id/unsubscribe-push')
   unsubscribe(@Param('id') userId: string) {
     return this.pushService.removeSubscription(userId);
+  }
+
+  @Post('send')
+  async sendNotification(@Body() body: { userId: string; title: string; body: string }) {
+    return this.pushService.sendToUser(body.userId, {
+      title: body.title,
+      body: body.body,
+    });
   }
 }
