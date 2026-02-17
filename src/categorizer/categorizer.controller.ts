@@ -1,5 +1,5 @@
-import { Body, Controller, Post, HttpException, HttpStatus, Logger, Get } from '@nestjs/common';
-import { CategorizerService } from './categorizer.service';
+import { Body, Controller, Post, Get, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import { CategorizerService, Prediction } from './categorizer.service';
 
 @Controller('categorizer')
 export class CategorizerController {
@@ -8,18 +8,17 @@ export class CategorizerController {
   constructor(private readonly categorizerService: CategorizerService) {}
 
   @Post('predict')
-  async predictCategory(@Body() body: { text: string; userId?: string }) {
+  async predictCategory(@Body() body: { text: string; userId?: string }): Promise<Prediction> {
     if (!body.text || body.text.trim().length === 0) {
       throw new HttpException('Текст обязателен', HttpStatus.BAD_REQUEST);
     }
 
     try {
-      const prediction = await this.categorizerService.predict(
-        body.text,
-        body.userId || 'anonymous',
-      );
+      const prediction = await this.categorizerService.predict(body.text);
       return prediction;
     } catch (error) {
+      if (error instanceof HttpException) throw error;
+
       this.logger.error(`Ошибка предсказания: ${error.message}`);
       throw new HttpException(
         'Не удалось получить предсказание от ML сервиса',
@@ -33,6 +32,8 @@ export class CategorizerController {
     try {
       return await this.categorizerService.forceRetrain(body.full);
     } catch (error) {
+      if (error instanceof HttpException) throw error;
+
       this.logger.error(`Ошибка переобучения: ${error.message}`);
       throw new HttpException('ML сервис недоступен', HttpStatus.SERVICE_UNAVAILABLE);
     }
@@ -43,6 +44,8 @@ export class CategorizerController {
     try {
       return await this.categorizerService.getStatus();
     } catch (error) {
+      if (error instanceof HttpException) throw error;
+
       this.logger.error(`Ошибка получения статуса: ${error.message}`);
       throw new HttpException('ML сервис недоступен', HttpStatus.SERVICE_UNAVAILABLE);
     }

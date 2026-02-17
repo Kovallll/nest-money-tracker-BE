@@ -1,12 +1,7 @@
-import { Injectable, Logger, OnModuleInit, Inject } from '@nestjs/common';
-import { ClientGrpc } from '@nestjs/microservices';
-import { Observable, lastValueFrom } from 'rxjs';
-
-interface CategorizerGrpcClient {
-  predict(data: { text: string; user_id: string }): Observable<any>;
-  forceRetrain(data: any): Observable<any>;
-  getStatus(data: any): Observable<any>;
-}
+import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
+import { HttpService } from '@nestjs/axios';
+import { firstValueFrom } from 'rxjs';
+import { AxiosError } from 'axios';
 
 export interface PredictionResult {
   category_id: string;
@@ -23,44 +18,109 @@ export interface Prediction {
   source: string;
 }
 
+interface PredictResponse {
+  success: boolean;
+  primary?: PredictionResult;
+  alternatives?: PredictionResult[];
+  needs_confirmation?: boolean;
+  source?: string;
+  error?: string;
+  is_training?: boolean;
+}
+
 @Injectable()
-export class CategorizerService implements OnModuleInit {
+export class CategorizerService {
   private readonly logger = new Logger(CategorizerService.name);
-  private grpcClient: CategorizerGrpcClient;
+  private readonly baseUrl: string;
 
-  constructor(@Inject('CATEGORIZER_PACKAGE') private client: ClientGrpc) {}
-
-  onModuleInit() {
-    this.grpcClient = this.client.getService<CategorizerGrpcClient>('ExpenseCategorizer');
-    this.logger.log('gRPC подключен к ML сервису');
+  constructor(private readonly httpService: HttpService) {
+    this.baseUrl = process.env.ML_SERVICE_URL || 'http://localhost:8080';
+    this.logger.log(`HTTP ML сервис: ${this.baseUrl}`);
   }
 
-  async predict(text: string, userId: string = 'anonymous'): Promise<Prediction> {
+  private handleError(error: AxiosError, context: string): never {
+    this.logger.error(`${context}: ${error.message}`);
+
+    if (error.response?.status === 503) {
+      throw new HttpException('Модель обучается, подождите', HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+      this.logger.warn('ML сервис недоступен, будет использован fallback');
+      throw new HttpException('ML сервис недоступен', HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    throw new HttpException(
+      error.response?.data || 'Ошибка ML сервиса',
+      error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+    );
+  }
+
+  async predict(text: string): Promise<Prediction> {
     try {
-      const response = await lastValueFrom(this.grpcClient.predict({ text, user_id: userId }));
+      const { data } = await firstValueFrom(
+        this.httpService.post<PredictResponse>(`${this.baseUrl}/predict`, { text }),
+      );
+
+      if (!data.success) {
+        throw new HttpException(data.error || 'Ошибка предсказания', HttpStatus.BAD_REQUEST);
+      }
+
+      if (!data.primary) {
+        throw new HttpException('Нет результата предсказания', HttpStatus.INTERNAL_SERVER_ERROR);
+      }
 
       return {
-        primary: response.primary,
-        alternatives: response.alternatives || [],
-        needs_confirmation: response.needs_confirmation,
-        source: response.source,
+        primary: data.primary,
+        alternatives: data.alternatives || [],
+        needs_confirmation: data.needs_confirmation ?? true,
+        source: data.source || 'fasttext',
       };
-    } catch (error: any) {
-      this.logger.error(`Ошибка предсказания: ${error.message}`);
-      throw new Error('ML сервис недоступен');
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      this.handleError(error as AxiosError, 'Ошибка предсказания');
     }
   }
 
   async forceRetrain(full: boolean = false): Promise<any> {
     try {
-      return await lastValueFrom(this.grpcClient.forceRetrain({ full }));
-    } catch (error: any) {
-      this.logger.warn(`Force retrain failed: ${error.message}`);
-      throw error;
+      const { data } = await firstValueFrom(
+        this.httpService.post(`${this.baseUrl}/retrain`, { full }),
+      );
+      return data;
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      this.handleError(error as AxiosError, 'Force retrain failed');
     }
   }
 
   async getStatus(): Promise<any> {
-    return lastValueFrom(this.grpcClient.getStatus({}));
+    try {
+      const { data } = await firstValueFrom(this.httpService.get(`${this.baseUrl}/status`));
+      return data;
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      this.handleError(error as AxiosError, 'Ошибка получения статуса');
+    }
+  }
+
+  async getModelInfo(): Promise<any> {
+    try {
+      const { data } = await firstValueFrom(this.httpService.get(`${this.baseUrl}/model-info`));
+      return data;
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      this.handleError(error as AxiosError, 'Ошибка получения информации о модели');
+    }
+  }
+
+  async getCategories(): Promise<any> {
+    try {
+      const { data } = await firstValueFrom(this.httpService.get(`${this.baseUrl}/categories`));
+      return data;
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      this.handleError(error as AxiosError, 'Ошибка получения категорий');
+    }
   }
 }
