@@ -14,6 +14,7 @@ import { ConfigModule } from '@nestjs/config';
 import { CategorizerModule } from './categorizer/categorizer.module';
 import { AuthModule } from './auth/auth.module';
 import { PushModule } from './push/push.module';
+import { TelegramModule } from './telegram/telegram.module';
 @Module({
   controllers: [AppController],
   providers: [AppService],
@@ -30,6 +31,7 @@ import { PushModule } from './push/push.module';
     CategorizerModule,
     AuthModule,
     PushModule,
+    TelegramModule,
     ConfigModule.forRoot({ isGlobal: true }),
   ],
 })
