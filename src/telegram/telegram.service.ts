@@ -8,6 +8,7 @@ import { randomBytes } from 'crypto';
 export class TelegramService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TelegramService.name);
   private bot: Telegraf | null = null;
+  private botUsername: string | null = null;
 
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
 
@@ -19,11 +20,22 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.bot = new Telegraf(token);
-    this.registerHandlers();
 
-    this.bot.launch().then(() => {
-      this.logger.log('🤖 Telegram-бот запущен');
-    });
+    try {
+      const me = await this.bot.telegram.getMe();
+      this.botUsername = me.username ?? null;
+      this.logger.log(`🤖 Telegram-бот @${this.botUsername} подключён`);
+    } catch (err) {
+      this.logger.error(
+        '❌ Не удалось получить информацию о боте — проверь TELEGRAM_BOT_TOKEN',
+        err,
+      );
+      this.bot = null;
+      return;
+    }
+
+    this.registerHandlers();
+    this.bot.launch();
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -65,10 +77,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
   }
 
   async generateLinkCode(userId: string): Promise<{ code: string; link: string }> {
-    await this.pool.query(
-      `DELETE FROM link_codes WHERE user_id = $1 AND used_at IS NULL`,
-      [userId],
-    );
+    await this.pool.query(`DELETE FROM link_codes WHERE user_id = $1 AND used_at IS NULL`, [
+      userId,
+    ]);
 
     const code = randomBytes(16).toString('hex');
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 минут
@@ -78,8 +89,11 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       [code, userId, expiresAt],
     );
 
-    const botUsername = await this.getBotUsername();
-    const link = `https://t.me/${botUsername}?start=lk_${code}`;
+    if (!this.botUsername) {
+      throw new Error('Telegram-бот не инициализирован');
+    }
+
+    const link = `https://t.me/${this.botUsername}?start=lk_${code}`;
 
     return { code, link };
   }
@@ -95,10 +109,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
   }
 
   async unlinkTelegram(userId: string): Promise<{ success: boolean }> {
-    const result = await this.pool.query(
-      'DELETE FROM user_telegram WHERE user_id = $1',
-      [userId],
-    );
+    const result = await this.pool.query('DELETE FROM user_telegram WHERE user_id = $1', [userId]);
     return { success: (result.rowCount ?? 0) > 0 };
   }
 
@@ -125,10 +136,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       return { success: false, error: 'Код просрочен. Получите новый в приложении.' };
     }
 
-    const alreadyLinked = await this.pool.query(
-      'SELECT 1 FROM user_telegram WHERE user_id = $1',
-      [linkCode.user_id],
-    );
+    const alreadyLinked = await this.pool.query('SELECT 1 FROM user_telegram WHERE user_id = $1', [
+      linkCode.user_id,
+    ]);
     if ((alreadyLinked.rowCount ?? 0) > 0) {
       return { success: false, error: 'Этот аккаунт уже привязан к Telegram.' };
     }
@@ -138,29 +148,20 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       [telegramUserId],
     );
     if ((tgTaken.rowCount ?? 0) > 0) {
-      return { success: false, error: 'Этот Telegram-аккаунт уже привязан к другому пользователю.' };
+      return {
+        success: false,
+        error: 'Этот Telegram-аккаунт уже привязан к другому пользователю.',
+      };
     }
 
-    await this.pool.query(
-      `UPDATE link_codes SET used_at = NOW() WHERE code = $1`,
-      [code],
-    );
+    await this.pool.query(`UPDATE link_codes SET used_at = NOW() WHERE code = $1`, [code]);
 
-    await this.pool.query(
-      `INSERT INTO user_telegram (user_id, telegram_user_id) VALUES ($1, $2)`,
-      [linkCode.user_id, telegramUserId],
-    );
+    await this.pool.query(`INSERT INTO user_telegram (user_id, telegram_user_id) VALUES ($1, $2)`, [
+      linkCode.user_id,
+      telegramUserId,
+    ]);
 
     return { success: true };
   }
-
-  private async getBotUsername(): Promise<string> {
-    if (!this.bot) return 'YourBotName';
-    try {
-      const me = await this.bot.telegram.getMe();
-      return me.username ?? 'YourBotName';
-    } catch {
-      return 'YourBotName';
-    }
-  }
 }
+
