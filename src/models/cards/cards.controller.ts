@@ -21,13 +21,13 @@ export class CardsController {
     return this.cardsService.addCard(card);
   }
 
+  @Patch(':id')
+  updateCard(@Param('id') id: string, @Body() card: Partial<CreateCard>) {
+    return this.cardsService.updateCard(Number(id), card);
+  }
+
   @Delete(':id')
   deleteCard(@Param('id') id: string) {
     return this.cardsService.deleteCard(Number(id));
-  }
-
-  @Patch(':id')
-  updateCard(@Param('id') id: string, @Body() card: CreateCard) {
-    return this.cardsService.updateCard(Number(id), card);
   }
 }

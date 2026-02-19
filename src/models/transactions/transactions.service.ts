@@ -1,109 +1,141 @@
-import { Tabs } from '@/enums';
+import { Injectable, Inject, Logger, OnModuleInit } from '@nestjs/common';
+import { Pool } from 'pg';
+import { PG_POOL } from '@/pg/pg.module';
 import { Transaction, TransactionCreate } from '@/types';
-import { Injectable } from '@nestjs/common';
+import { seedTransactions } from './seed';
 
 @Injectable()
-export class TransactionsService {
-  private transactions: Transaction[] = [];
+export class TransactionsService implements OnModuleInit {
+  private readonly logger = new Logger(TransactionsService.name);
 
-  constructor() {
-    this.seedTransactions(); // Генерируем данные один раз при запуске
+  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.seedIfEmpty();
   }
 
-  private seedTransactions() {
-    const expenseTitles: Record<string, string[]> = {
-      Food: ['Grocery Store', 'Restaurant Dinner', 'Coffee Shop', 'Fast Food Order'],
-      Transport: ['Bus Ticket', 'Taxi Ride', 'Gas Station', 'Train Ticket'],
-      Entertainment: ['Movie Ticket', 'Concert', 'Online Game', 'Streaming Service'],
-      Shopping: ['Clothes Store', 'Electronics Shop', 'Home Supplies', 'Bookstore'],
-      Health: ['Pharmacy Purchase', 'Doctor Visit', 'Gym Membership', 'Dental Service'],
-      Education: ['Course Payment', 'Books Purchase', 'Online Lesson', 'Exam Fee'],
-      Other: ['Gift Purchase', 'Charity Donation', 'Miscellaneous Expense'],
-    };
+  private async seedIfEmpty(): Promise<void> {
+    const { rowCount } = await this.pool.query('SELECT 1 FROM transactions LIMIT 1');
+    if (rowCount && rowCount > 0) return;
 
-    const incomeTitles: Record<string, string[]> = {
-      Salary: ['Monthly Salary', 'Paycheck'],
-      Bonus: ['Performance Bonus', 'Holiday Bonus', 'Annual Bonus'],
-      Freelance: ['Freelance Project Payment', 'Client Transfer'],
-      Investments: ['Stock Dividend', 'Crypto Profit', 'Bank Interest'],
-    };
-
-    const categories = {
-      expense: Object.keys(expenseTitles),
-      income: Object.keys(incomeTitles),
-    };
-
-    const paymentMethods = ['Card', 'Cash', 'Bank Transfer', 'Crypto'];
-    const transactionTypes = ['Purchase', 'Refund', 'Transfer', 'Deposit'];
-    const statuses = ['completed', 'pending', 'cancelled'];
-
-    const startDate = new Date('2024-05-01');
-    const endDate = new Date();
-    let idCounter = 0;
-
-    for (let i = 0; i < 500; i++) {
-      const isIncome = Math.random() < 0.3;
-      const type = isIncome ? Tabs.Revenues : Tabs.Expenses;
-      const category = isIncome
-        ? categories.income[Math.floor(Math.random() * categories.income.length)]
-        : categories.expense[Math.floor(Math.random() * categories.expense.length)];
-
-      const amount = parseFloat((Math.random() * (isIncome ? 3000 : 200) + 5).toFixed(2));
-      const title = isIncome
-        ? incomeTitles[category][Math.floor(Math.random() * incomeTitles[category].length)]
-        : expenseTitles[category][Math.floor(Math.random() * expenseTitles[category].length)];
-
-      const randomDate = new Date(
-        startDate.getTime() + Math.random() * (endDate.getTime() - startDate.getTime()),
-      );
-
-      this.transactions.push({
-        id: idCounter++,
-        userId: Math.floor(Math.random() * 10) + 1,
-        cardId: Math.floor(Math.random() * 5) + 1,
-        categoryId: Math.floor(Math.random() * 7),
-        title,
-        amount,
-        date: randomDate.toISOString().split('T')[0],
-        type,
-        paymentMethod: paymentMethods[Math.floor(Math.random() * paymentMethods.length)],
-        transactionType: transactionTypes[Math.floor(Math.random() * transactionTypes.length)],
-        receipt: `receipt-${idCounter}.pdf`,
-        status: statuses[Math.floor(Math.random() * statuses.length)] as
-          | 'cancelled'
-          | 'pending'
-          | 'completed',
-      });
+    const userRes = await this.pool.query('SELECT id FROM users LIMIT 1');
+    if (userRes.rows.length === 0) {
+      this.logger.warn('⚠️ Нет пользователей — seed транзакций пропущен');
+      return;
     }
+    const userId: string = userRes.rows[0].id;
+
+    const cardRes = await this.pool.query('SELECT id FROM cards WHERE user_id = $1 LIMIT 1', [userId]);
+    if (cardRes.rows.length === 0) {
+      this.logger.warn('⚠️ Нет карт у пользователя — seed транзакций пропущен');
+      return;
+    }
+    const cardId: string = String(cardRes.rows[0].id);
+
+    this.logger.log('🌱 Создание базовых транзакций...');
+
+    for (const t of seedTransactions) {
+      let categoryId: string = '';
+
+      if (t.categoryName) {
+        const cat = await this.pool.query('SELECT id FROM categories WHERE name = $1 LIMIT 1', [
+          t.categoryName,
+        ]);
+        categoryId = cat.rows[0]?.id ?? '';
+      }
+
+      await this.pool.query(
+        `INSERT INTO transactions (user_id, card_id, category_id, type, amount, title, description, date)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [userId, cardId, categoryId || null, t.type, t.amount, t.title, t.description ?? null, t.date],
+      );
+    }
+
+    this.logger.log(`✅ Создано ${seedTransactions.length} транзакций`);
   }
 
-  getTransactions() {
-    return this.transactions;
-  }
-
-  createTransaction(transaction: TransactionCreate) {
-    const newTransaction = {
-      ...transaction,
-      id: this.transactions.length + 1,
-      date: new Date().toISOString().split('T')[0],
-      userId: Math.floor(Math.random() * 10) + 1,
-      cardId: Math.floor(Math.random() * 5) + 1,
-      categoryId: Math.floor(Math.random() * 7),
+  private mapRow(row: Record<string, any>): Transaction {
+    return {
+      id: row.id,
+      userId: row.user_id,
+      cardId: String(row.card_id),
+      categoryId: row.category_id ?? '',
+      type: row.type,
+      amount: parseFloat(row.amount),
+      title: row.title ?? null,
+      description: row.description ?? null,
+      date: row.date instanceof Date ? row.date.toISOString().split('T')[0] : row.date,
+      createdAt: row.created_at?.toISOString?.() ?? row.created_at,
+      updatedAt: row.updated_at?.toISOString?.() ?? row.updated_at,
     };
-    this.transactions.unshift(newTransaction);
-    return newTransaction;
   }
 
-  deleteTransaction(id: number) {
-    this.transactions = this.transactions.filter((t) => t.id !== id);
-    return { success: true };
+  async getTransactions(): Promise<Transaction[]> {
+    const { rows } = await this.pool.query(
+      'SELECT * FROM transactions ORDER BY date DESC, id DESC',
+    );
+    return rows.map((r) => this.mapRow(r));
   }
 
-  updateTransaction(id: number, updateTransaction: TransactionCreate) {
-    const index = this.transactions.findIndex((t) => t.id === id);
-    if (index === -1) return null;
-    this.transactions[index] = { ...this.transactions[index], ...updateTransaction };
-    return this.transactions[index];
+  async getTransactionById(id: number): Promise<Transaction | null> {
+    const { rows } = await this.pool.query('SELECT * FROM transactions WHERE id = $1', [id]);
+    return rows.length > 0 ? this.mapRow(rows[0]) : null;
+  }
+
+  async createTransaction(dto: TransactionCreate): Promise<Transaction> {
+    const { rows } = await this.pool.query(
+      `INSERT INTO transactions (user_id, card_id, category_id, type, amount, title, description, date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [
+        dto.userId,
+        dto.cardId,
+        dto.categoryId || null,
+        dto.type,
+        dto.amount,
+        dto.title ?? null,
+        dto.description ?? null,
+        dto.date,
+      ],
+    );
+    return this.mapRow(rows[0]);
+  }
+
+  async updateTransaction(id: number, dto: Partial<TransactionCreate>): Promise<Transaction | null> {
+    const existing = await this.getTransactionById(id);
+    if (!existing) return null;
+
+    const { rows } = await this.pool.query(
+      `UPDATE transactions
+       SET user_id     = COALESCE($1, user_id),
+           card_id     = COALESCE($2, card_id),
+           category_id = COALESCE($3, category_id),
+           type        = COALESCE($4, type),
+           amount      = COALESCE($5, amount),
+           title       = COALESCE($6, title),
+           description = COALESCE($7, description),
+           date        = COALESCE($8, date),
+           updated_at  = NOW()
+       WHERE id = $9
+       RETURNING *`,
+      [
+        dto.userId ?? null,
+        dto.cardId ?? null,
+        dto.categoryId || null,
+        dto.type ?? null,
+        dto.amount ?? null,
+        dto.title ?? null,
+        dto.description ?? null,
+        dto.date ?? null,
+        id,
+      ],
+    );
+
+    return this.mapRow(rows[0]);
+  }
+
+  async deleteTransaction(id: number): Promise<{ success: boolean }> {
+    const result = await this.pool.query('DELETE FROM transactions WHERE id = $1', [id]);
+    return { success: (result.rowCount ?? 0) > 0 };
   }
 }
-
