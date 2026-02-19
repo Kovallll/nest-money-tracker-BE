@@ -95,6 +95,30 @@ export class CardsService implements OnModuleInit {
     return cards.map((c) => this.mapRow(c, txByCard[c.id] ?? []));
   }
 
+  async getCardsByUserId(userId: string): Promise<BalanceCard[]> {
+    const { rows: cards } = await this.pool.query(
+      'SELECT * FROM cards WHERE user_id = $1 ORDER BY id',
+      [userId],
+    );
+
+    const cardIds = cards.map((c) => c.id);
+    if (cardIds.length === 0) return [];
+
+    const { rows: txRows } = await this.pool.query(
+      'SELECT * FROM transactions WHERE card_id = ANY($1) ORDER BY date DESC',
+      [cardIds],
+    );
+
+    const txByCard: Record<number, Transaction[]> = {};
+    for (const row of txRows) {
+      const cid = row.card_id;
+      if (!txByCard[cid]) txByCard[cid] = [];
+      txByCard[cid].push(this.mapTransaction(row));
+    }
+
+    return cards.map((c) => this.mapRow(c, txByCard[c.id] ?? []));
+  }
+
   async getCard(id: number): Promise<BalanceCard | null> {
     const { rows } = await this.pool.query('SELECT * FROM cards WHERE id = $1', [id]);
     if (rows.length === 0) return null;

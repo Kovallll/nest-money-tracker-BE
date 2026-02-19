@@ -11,6 +11,11 @@ export class TransactionsController {
     return this.transactionsService.getTransactions();
   }
 
+  @Get('user/:userId')
+  getTransactionsByUserId(@Param('userId') userId: string) {
+    return this.transactionsService.getTransactionsByUserId(userId);
+  }
+
   @Get(':id')
   getTransactionById(@Param('id') id: number) {
     return this.transactionsService.getTransactionById(Number(id));

@@ -93,6 +93,58 @@ export class CategoriesService {
     }));
   }
 
+  async getCategoriesByUserId(userId: string): Promise<CategoryItem[]> {
+    const { rows: categories } = await this.pool.query(
+      `SELECT 
+        c.id,
+        c.name as title,
+        c.icon,
+        c.color,
+        COALESCE(SUM(CASE WHEN t.type = 'expense' THEN t.amount ELSE 0 END), 0) as total_expenses,
+        COALESCE(SUM(CASE WHEN t.type = 'revenue' THEN t.amount ELSE 0 END), 0) as total_revenues
+      FROM categories c
+      LEFT JOIN transactions t ON t.category_id = c.id AND t.user_id = $1
+      WHERE c.user_id = $1 OR c.user_id IS NULL
+      GROUP BY c.id, c.name, c.icon, c.color
+      ORDER BY c.name`,
+      [userId],
+    );
+
+    const { rows: transactions } = await this.pool.query(
+      `SELECT t.*, c.name as category_name
+       FROM transactions t
+       JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = $1
+       ORDER BY t.date DESC`,
+      [userId],
+    );
+
+    const transactionsByCategory: Record<string, any[]> = {};
+    for (const t of transactions) {
+      if (!transactionsByCategory[t.category_id]) {
+        transactionsByCategory[t.category_id] = [];
+      }
+      transactionsByCategory[t.category_id].push({
+        id: t.id,
+        amount: t.amount,
+        type: t.type,
+        date: t.date,
+        description: t.description,
+      });
+    }
+
+    return categories.map((cat) => ({
+      id: cat.id,
+      title: cat.title,
+      icon: cat.icon || 'pi pi-table',
+      color: cat.color,
+      totalExpenses: parseFloat(cat.total_expenses),
+      totalRevenues: parseFloat(cat.total_revenues),
+      expenses: transactionsByCategory[cat.id]?.filter((t) => t.type === Tabs.Expenses) || [],
+      revenues: transactionsByCategory[cat.id]?.filter((t) => t.type === Tabs.Revenues) || [],
+    }));
+  }
+
   async getCategoryById(id: string): Promise<CategoryItem | null> {
     const { rows } = await this.pool.query('SELECT * FROM categories WHERE id = $1', [id]);
 

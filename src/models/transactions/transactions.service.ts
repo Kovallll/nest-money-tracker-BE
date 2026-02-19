@@ -77,6 +77,14 @@ export class TransactionsService implements OnModuleInit {
     return rows.map((r) => this.mapRow(r));
   }
 
+  async getTransactionsByUserId(userId: string): Promise<Transaction[]> {
+    const { rows } = await this.pool.query(
+      'SELECT * FROM transactions WHERE user_id = $1 ORDER BY date DESC, id DESC',
+      [userId],
+    );
+    return rows.map((r) => this.mapRow(r));
+  }
+
   async getTransactionById(id: number): Promise<Transaction | null> {
     const { rows } = await this.pool.query('SELECT * FROM transactions WHERE id = $1', [id]);
     return rows.length > 0 ? this.mapRow(rows[0]) : null;

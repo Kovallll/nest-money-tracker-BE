@@ -41,6 +41,11 @@ export class CategoriesController implements OnModuleInit {
     return await this.categoriesService.getCategories();
   }
 
+  @Get('user/:userId')
+  async getCategoriesByUserId(@Param('userId') userId: string) {
+    return this.categoriesService.getCategoriesByUserId(userId);
+  }
+
   @Get(':id')
   async getCategory(@Param('id') id: string) {
     const category = await this.categoriesService.getCategoryById(id);

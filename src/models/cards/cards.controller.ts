@@ -11,6 +11,11 @@ export class CardsController {
     return this.cardsService.getCards();
   }
 
+  @Get('user/:userId')
+  getCardsByUserId(@Param('userId') userId: string) {
+    return this.cardsService.getCardsByUserId(userId);
+  }
+
   @Get(':id')
   getCard(@Param('id') id: string) {
     return this.cardsService.getCard(Number(id));
