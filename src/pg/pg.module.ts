@@ -12,8 +12,11 @@ export const PG_POOL = 'PG_POOL';
         const pool = new Pool({
           connectionString: process.env.DATABASE_URL,
           max: 10,
+          ssl: {
+            rejectUnauthorized: false,
+          },
         });
-        await pool.query('SELECT 1'); // healthcheck
+        await pool.query('SELECT 1');
         return pool;
       },
     },
@@ -21,3 +24,4 @@ export const PG_POOL = 'PG_POOL';
   exports: [PG_POOL],
 })
 export class PgModule {}
+
