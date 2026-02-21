@@ -46,15 +46,17 @@ export class TransactionsService implements OnModuleInit {
         categoryId = cat.rows[0]?.id ?? '';
       }
 
+      const currencyCode = (t as { currencyCode?: string }).currencyCode ?? 'BYN';
       await this.pool.query(
-        `INSERT INTO transactions (user_id, card_id, category_id, type, amount, title, description, date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        `INSERT INTO transactions (user_id, card_id, category_id, type, amount, currency_code, title, description, date)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           userId,
           cardId,
           categoryId || null,
           t.type,
           t.amount,
+          currencyCode,
           t.title,
           t.description ?? null,
           t.date,
@@ -73,6 +75,7 @@ export class TransactionsService implements OnModuleInit {
       categoryId: row.category_id ?? '',
       type: row.type,
       amount: parseFloat(row.amount),
+      currencyCode: row.currency_code ?? 'BYN',
       title: row.title ?? null,
       description: row.description ?? null,
       date: row.date instanceof Date ? row.date.toISOString().split('T')[0] : row.date,
@@ -107,9 +110,10 @@ export class TransactionsService implements OnModuleInit {
   }
 
   async createTransaction(dto: TransactionCreate): Promise<Transaction> {
+    const currencyCode = dto.currencyCode ?? 'BYN';
     const { rows } = await this.pool.query(
-      `INSERT INTO transactions (user_id, card_id, category_id, type, amount, title, description, date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO transactions (user_id, card_id, category_id, type, amount, currency_code, title, description, date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         dto.userId,
@@ -117,6 +121,7 @@ export class TransactionsService implements OnModuleInit {
         dto.categoryId || null,
         dto.type,
         dto.amount,
+        currencyCode,
         dto.title ?? null,
         dto.description ?? null,
         dto.date,
@@ -134,16 +139,17 @@ export class TransactionsService implements OnModuleInit {
 
     const { rows } = await this.pool.query(
       `UPDATE transactions
-       SET user_id     = COALESCE($1, user_id),
-           card_id     = COALESCE($2, card_id),
-           category_id = COALESCE($3, category_id),
-           type        = COALESCE($4, type),
-           amount      = COALESCE($5, amount),
-           title       = COALESCE($6, title),
-           description = COALESCE($7, description),
-           date        = COALESCE($8, date),
-           updated_at  = NOW()
-       WHERE id = $9
+       SET user_id       = COALESCE($1, user_id),
+           card_id       = COALESCE($2, card_id),
+           category_id   = COALESCE($3, category_id),
+           type          = COALESCE($4, type),
+           amount        = COALESCE($5, amount),
+           currency_code = COALESCE($6, currency_code),
+           title         = COALESCE($7, title),
+           description   = COALESCE($8, description),
+           date          = COALESCE($9, date),
+           updated_at    = NOW()
+       WHERE id = $10
        RETURNING *`,
       [
         dto.userId ?? null,
@@ -151,6 +157,7 @@ export class TransactionsService implements OnModuleInit {
         dto.categoryId || null,
         dto.type ?? null,
         dto.amount ?? null,
+        dto.currencyCode ?? null,
         dto.title ?? null,
         dto.description ?? null,
         dto.date ?? null,

@@ -36,4 +36,10 @@ export class CreateTransactionDto {
 
   @IsDateString({}, { message: 'date в формате YYYY-MM-DD' })
   date: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['BYN', 'USD', 'EUR', 'RUB'])
+  currencyCode?: string;
 }
+
