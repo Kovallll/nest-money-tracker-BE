@@ -1,4 +1,11 @@
-import { Injectable, Inject, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Inject,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { Pool } from 'pg';
 import { PG_POOL } from '@/pg/pg.module';
 import { Telegraf } from 'telegraf';
@@ -90,7 +97,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     );
 
     if (!this.botUsername) {
-      throw new Error('Telegram-бот не инициализирован');
+      throw new ServiceUnavailableException(
+        'Telegram-бот не инициализирован. Проверьте TELEGRAM_BOT_TOKEN и перезапустите сервер.',
+      );
     }
 
     const link = `https://t.me/${this.botUsername}?start=lk_${code}`;

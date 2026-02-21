@@ -3,18 +3,14 @@ FROM node:22-slim
 WORKDIR /app
 
 # Copy package files
-COPY backend/package*.json ./
-COPY backend/yarn.lock ./
+COPY package*.json ./
+COPY yarn.lock ./
 
 # Install dependencies
 RUN yarn install --frozen-lockfile
 
-# Copy proto files
-RUN mkdir -p /app/proto
-COPY proto/categorizer.proto /app/proto/
-
 # Copy source code
-COPY backend/ .
+COPY . .
 
 # Build application
 RUN yarn build

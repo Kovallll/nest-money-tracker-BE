@@ -1,5 +1,10 @@
 // api/src/users/users.service.ts
-import { Injectable, Inject, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  Inject,
+  UnauthorizedException,
+  BadRequestException,
+} from '@nestjs/common';
 import { Pool } from 'pg';
 import { PG_POOL } from '../pg/pg.module';
 import * as bcrypt from 'bcrypt';
@@ -35,7 +40,11 @@ export class UsersService {
       values.push(data.phone);
     }
 
-    if (fields.length === 0) throw new Error('No fields to update');
+    if (fields.length === 0) {
+      throw new BadRequestException(
+        'Нет полей для обновления. Укажите хотя бы одно: name, lastname или phone.',
+      );
+    }
 
     values.push(userId);
 
@@ -65,10 +74,10 @@ export class UsersService {
     ]);
 
     const user = rows[0];
-    if (!user) throw new UnauthorizedException('User not found');
+    if (!user) throw new UnauthorizedException('Пользователь не найден');
 
     const isValid = await bcrypt.compare(oldPassword, user.password_hash);
-    if (!isValid) throw new UnauthorizedException('Invalid old password');
+    if (!isValid) throw new UnauthorizedException('Неверный текущий пароль. Введите правильный пароль.');
 
     // Обновление пароля
     const newHash = await bcrypt.hash(newPassword, 10);

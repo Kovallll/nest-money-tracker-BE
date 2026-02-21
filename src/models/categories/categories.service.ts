@@ -1,5 +1,11 @@
 // api/src/categories/categories.service.ts
-import { Injectable, Inject, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Inject,
+  Logger,
+  NotFoundException,
+  ConflictException,
+} from '@nestjs/common';
 import { Pool } from 'pg';
 import { PG_POOL } from '@/pg/pg.module';
 import { CategoryItem, CreateCategoryItem } from '@/types';
@@ -170,7 +176,9 @@ export class CategoriesService {
     ]);
 
     if (exists?.rowCount ?? 0 > 0) {
-      throw new Error('Категория с таким ID или именем уже существует');
+      throw new ConflictException(
+        'Категория с таким ID или именем уже существует. Укажите другой id или имя.',
+      );
     }
 
     const { rows } = await this.pool.query(
@@ -218,7 +226,9 @@ export class CategoriesService {
     );
 
     if (rows.length === 0) {
-      throw new Error('Категория не найдена');
+      throw new NotFoundException(
+        `Категория с id=${id} не найдена. Проверьте идентификатор или создайте категорию.`,
+      );
     }
 
     this.logger.log(`✏️ Обновлена категория: ${id}`);
@@ -243,7 +253,9 @@ export class CategoriesService {
     );
 
     if (used.length > 0) {
-      throw new Error('Нельзя удалить категорию с транзакциями');
+      throw new ConflictException(
+        'Нельзя удалить категорию: к ней привязаны транзакции. Сначала измените или удалите эти транзакции.',
+      );
     }
 
     // Удаляем примеры
@@ -264,7 +276,9 @@ export class CategoriesService {
     const exists = await this.pool.query('SELECT 1 FROM categories WHERE id = $1', [categoryId]);
 
     if (exists.rowCount === 0) {
-      throw new Error('Категория не найдена');
+      throw new NotFoundException(
+        `Категория с id=${categoryId} не найдена. Проверьте идентификатор.`,
+      );
     }
 
     await this.pool.query(
