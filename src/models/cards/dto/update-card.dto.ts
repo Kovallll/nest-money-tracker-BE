@@ -1,4 +1,6 @@
-import { IsString, IsNumber, IsOptional, Min, MaxLength } from 'class-validator';
+import { IsString, IsNumber, IsOptional, Min, MaxLength, IsIn } from 'class-validator';
+
+const ALLOWED_CURRENCIES = ['BYN', 'USD', 'EUR', 'RUB'] as const;
 
 export class UpdateCardDto {
   @IsOptional()
@@ -34,4 +36,9 @@ export class UpdateCardDto {
   @IsNumber()
   @Min(0)
   cardBalance?: number;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(ALLOWED_CURRENCIES)
+  currencyCode?: string;
 }

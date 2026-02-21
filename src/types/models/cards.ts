@@ -9,6 +9,8 @@ export interface BalanceCard {
   bankName: string;
   branchName: string;
   cardBalance: number;
+  /** Currency code (e.g. BYN, USD). Default BYN if missing. */
+  currencyCode?: string;
   isActive: boolean;
   transactions: Transaction[];
   createdAt: string;
@@ -23,4 +25,5 @@ export interface CreateCard {
   bankName: string;
   branchName: string;
   cardBalance?: number;
+  currencyCode?: string;
 }

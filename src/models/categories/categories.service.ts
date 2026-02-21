@@ -7,6 +7,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { Pool } from 'pg';
+import { v4 as uuid4 } from 'uuid';
 import { PG_POOL } from '@/pg/pg.module';
 import { CategoryItem, CreateCategoryItem } from '@/types';
 import { Tabs } from '@/enums';
@@ -161,15 +162,15 @@ export class CategoriesService {
     return all.find((c) => c.id === id) || null;
   }
 
-  async createCategory(category: CreateCategoryItem): Promise<CategoryItem> {
-    const id =
-      category.id ||
-      category.name
-        .toLowerCase()
-        .replace(/\s+/g, '-')
-        .replace(/[^a-z0-9-]/g, '');
+  private static readonly UUID_REGEX =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-    // Проверяем уникальность
+  async createCategory(category: CreateCategoryItem): Promise<CategoryItem> {
+    // В БД id имеет тип UUID — используем переданный id только если это валидный UUID, иначе генерируем
+    const id =
+      category.id && CategoriesService.UUID_REGEX.test(category.id) ? category.id : uuid4();
+
+    // Проверяем уникальность по имени (id уникален по определению)
     const exists = await this.pool.query('SELECT 1 FROM categories WHERE id = $1 OR name = $2', [
       id,
       category.name,

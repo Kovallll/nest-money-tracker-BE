@@ -29,10 +29,11 @@ export class CardsService implements OnModuleInit {
     this.logger.log('🌱 Создание тестовых карт...');
 
     for (const c of seedCards) {
+      const currencyCode = (c as { currencyCode?: string }).currencyCode ?? 'BYN';
       await this.pool.query(
-        `INSERT INTO cards (user_id, card_name, card_number, card_type, bank_name, branch_name, card_balance)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [userId, c.cardName, c.cardNumber, c.cardType, c.bankName, c.branchName, c.cardBalance],
+        `INSERT INTO cards (user_id, card_name, card_number, card_type, bank_name, branch_name, card_balance, currency_code)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [userId, c.cardName, c.cardNumber, c.cardType, c.bankName, c.branchName, c.cardBalance, currencyCode],
       );
     }
 
@@ -49,6 +50,7 @@ export class CardsService implements OnModuleInit {
       bankName: row.bank_name ?? '',
       branchName: row.branch_name ?? '',
       cardBalance: parseFloat(row.card_balance),
+      currencyCode: row.currency_code ?? 'BYN',
       isActive: row.is_active,
       transactions,
       createdAt: row.created_at?.toISOString?.() ?? row.created_at,
@@ -132,11 +134,12 @@ export class CardsService implements OnModuleInit {
   }
 
   async addCard(dto: CreateCard): Promise<BalanceCard> {
+    const currencyCode = dto.currencyCode ?? 'BYN';
     const { rows } = await this.pool.query(
-      `INSERT INTO cards (user_id, card_name, card_number, card_type, bank_name, branch_name, card_balance)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO cards (user_id, card_name, card_number, card_type, bank_name, branch_name, card_balance, currency_code)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-      [dto.userId, dto.cardName, dto.cardNumber, dto.cardType, dto.bankName, dto.branchName, dto.cardBalance ?? 0],
+      [dto.userId, dto.cardName, dto.cardNumber, dto.cardType, dto.bankName, dto.branchName, dto.cardBalance ?? 0, currencyCode],
     );
     return this.mapRow(rows[0]);
   }
@@ -147,14 +150,15 @@ export class CardsService implements OnModuleInit {
 
     const { rows } = await this.pool.query(
       `UPDATE cards
-       SET card_name    = COALESCE($1, card_name),
-           card_number  = COALESCE($2, card_number),
-           card_type    = COALESCE($3, card_type),
-           bank_name    = COALESCE($4, bank_name),
-           branch_name  = COALESCE($5, branch_name),
-           card_balance = COALESCE($6, card_balance),
-           updated_at   = NOW()
-       WHERE id = $7
+       SET card_name     = COALESCE($1, card_name),
+           card_number   = COALESCE($2, card_number),
+           card_type     = COALESCE($3, card_type),
+           bank_name     = COALESCE($4, bank_name),
+           branch_name   = COALESCE($5, branch_name),
+           card_balance  = COALESCE($6, card_balance),
+           currency_code = COALESCE($7, currency_code),
+           updated_at    = NOW()
+       WHERE id = $8
        RETURNING *`,
       [
         dto.cardName ?? null,
@@ -163,6 +167,7 @@ export class CardsService implements OnModuleInit {
         dto.bankName ?? null,
         dto.branchName ?? null,
         dto.cardBalance ?? null,
+        dto.currencyCode ?? null,
         id,
       ],
     );
