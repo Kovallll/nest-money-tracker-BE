@@ -43,9 +43,13 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
     this.registerHandlers();
 
-    const pollingEnabled = process.env.TELEGRAM_POLLING_ENABLED !== 'false';
-    if (!pollingEnabled) {
-      this.logger.log('🤖 Telegram polling отключён (TELEGRAM_POLLING_ENABLED=false). Ссылки для привязки работают.');
+    const pollingEnv = process.env.TELEGRAM_POLLING_ENABLED ?? '';
+    const pollingDisabled = ['false', '0', 'no', 'off'].includes(pollingEnv.toLowerCase().trim());
+    this.logger.log(
+      `🤖 TELEGRAM_POLLING_ENABLED="${pollingEnv}" → polling ${pollingDisabled ? 'отключён' : 'включён'}`,
+    );
+    if (pollingDisabled) {
+      this.logger.log('🤖 Ссылки для привязки работают без получения сообщений от бота.');
       return;
     }
 
