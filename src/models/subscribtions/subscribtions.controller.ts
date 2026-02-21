@@ -8,6 +8,7 @@ import {
   Post,
   HttpCode,
   HttpStatus,
+  BadRequestException,
   NotFoundException,
   UseGuards,
 } from '@nestjs/common';
@@ -27,7 +28,12 @@ export class SubscribtionsController {
 
   @Get('user/:userId')
   getByUserId(@Param('userId') userId: string) {
-    return this.subscribtionsService.getByUserId(userId);
+    if (!userId?.trim()) {
+      throw new BadRequestException(
+        'Укажите userId в пути: GET /api/subscribtions/user/:userId (например, UUID пользователя).',
+      );
+    }
+    return this.subscribtionsService.getByUserId(userId.trim());
   }
 
   @Get(':id')

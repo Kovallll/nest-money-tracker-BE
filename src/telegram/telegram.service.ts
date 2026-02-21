@@ -42,7 +42,31 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.registerHandlers();
-    this.bot.launch();
+
+    const pollingEnabled = process.env.TELEGRAM_POLLING_ENABLED !== 'false';
+    if (!pollingEnabled) {
+      this.logger.log('🤖 Telegram polling отключён (TELEGRAM_POLLING_ENABLED=false). Ссылки для привязки работают.');
+      return;
+    }
+
+    try {
+      await this.bot.launch();
+    } catch (err: any) {
+      const is409 =
+        err?.response?.error_code === 409 ||
+        err?.message?.includes('409') ||
+        err?.message?.includes('Conflict');
+      if (is409) {
+        this.logger.warn(
+          '⚠️ Telegram 409: другой инстанс бота уже получает обновления. ' +
+            'Запустите бота только в одном процессе или задайте TELEGRAM_POLLING_ENABLED=false на репликах.',
+        );
+        return;
+      }
+      this.logger.error('❌ Ошибка запуска Telegram polling', err);
+      this.bot = null;
+      this.botUsername = null;
+    }
   }
 
   async onModuleDestroy(): Promise<void> {

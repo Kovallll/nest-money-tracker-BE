@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   Query,
+  BadRequestException,
   UseGuards,
 } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
@@ -28,7 +29,12 @@ export class TransactionsController {
     @Param('userId') userId: string,
     @Query('type') type?: 'expense' | 'revenue',
   ) {
-    return this.transactionsService.getTransactionsByUserId(userId, type);
+    if (!userId?.trim()) {
+      throw new BadRequestException(
+        'Укажите userId в пути: GET /api/transactions/user/:userId (например, UUID пользователя).',
+      );
+    }
+    return this.transactionsService.getTransactionsByUserId(userId.trim(), type);
   }
 
   @Get(':id')

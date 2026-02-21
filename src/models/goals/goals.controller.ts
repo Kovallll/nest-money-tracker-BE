@@ -8,6 +8,7 @@ import {
   Post,
   HttpCode,
   HttpStatus,
+  BadRequestException,
   NotFoundException,
   UseGuards,
 } from '@nestjs/common';
@@ -27,7 +28,12 @@ export class GoalsController {
 
   @Get('user/:userId')
   getByUserId(@Param('userId') userId: string) {
-    return this.goalsService.getGoalsByUserId(userId);
+    if (!userId?.trim()) {
+      throw new BadRequestException(
+        'Укажите userId в пути: GET /api/goals/user/:userId (например, UUID пользователя).',
+      );
+    }
+    return this.goalsService.getGoalsByUserId(userId.trim());
   }
 
   @Get(':id')

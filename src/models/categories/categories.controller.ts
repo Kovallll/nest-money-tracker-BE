@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  BadRequestException,
   HttpException,
   HttpStatus,
   Logger,
@@ -46,7 +47,12 @@ export class CategoriesController implements OnModuleInit {
 
   @Get('user/:userId')
   async getCategoriesByUserId(@Param('userId') userId: string) {
-    return this.categoriesService.getCategoriesByUserId(userId);
+    if (!userId?.trim()) {
+      throw new BadRequestException(
+        'Укажите userId в пути: GET /api/categories/user/:userId (например, UUID пользователя).',
+      );
+    }
+    return this.categoriesService.getCategoriesByUserId(userId.trim());
   }
 
   @Get(':id')
