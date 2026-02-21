@@ -180,16 +180,10 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       return { success: false, error: 'Этот аккаунт уже привязан к Telegram.' };
     }
 
-    const tgTaken = await this.pool.query(
-      'SELECT 1 FROM user_telegram WHERE telegram_user_id = $1',
-      [telegramUserId],
-    );
-    if ((tgTaken.rowCount ?? 0) > 0) {
-      return {
-        success: false,
-        error: 'Этот Telegram-аккаунт уже привязан к другому пользователю.',
-      };
-    }
+    // Если этот Telegram уже привязан к другому пользователю — отвязываем и привязываем к текущему (перепривязка)
+    await this.pool.query('DELETE FROM user_telegram WHERE telegram_user_id = $1', [
+      telegramUserId,
+    ]);
 
     await this.pool.query(`UPDATE link_codes SET used_at = NOW() WHERE code = $1`, [code]);
 
