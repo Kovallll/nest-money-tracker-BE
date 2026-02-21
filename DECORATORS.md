@@ -34,6 +34,8 @@ getVapidPublicKey() {
 }
 ```
 
+**Сервер-сервер:** если задан `API_KEY`, любой защищённый маршрут можно вызывать с заголовком `X-API-Key` или `Authorization: Bearer <API_KEY>` без JWT. Подробнее — в `DTO-VALIDATION.md`.
+
 ---
 
 ## Что можно добавить
