@@ -21,20 +21,30 @@ export interface ExpenseItem {
 
 export interface GoalItem {
   id: string;
+  userId?: string;
+  categoryId?: string | null;
+  title: string;
   targetBudget: number;
   goalBudget: number;
   startDate: string;
   endDate: string;
-  title: string;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface SubscribeItem {
   id: string;
-  amount: number;
-  subscribeDate: string;
+  userId?: string;
+  categoryId?: string | null;
   subscribeName: string;
-  lastCharge: string;
+  subscribeDate: string;
+  amount: number;
+  lastCharge: string | null;
   type: string;
-  description?: string;
+  description?: string | null;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 

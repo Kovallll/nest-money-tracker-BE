@@ -1,18 +1,26 @@
-import { Body, Controller, Post, Get, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Post,
+  Get,
+  HttpException,
+  HttpStatus,
+  Logger,
+  UseGuards,
+} from '@nestjs/common';
 import { CategorizerService, Prediction } from './categorizer.service';
+import { JwtAuthGuard } from '@/auth/jwt-auth.guard';
+import { PredictCategoryDto, RetrainDto } from './dto';
 
 @Controller('categorizer')
+@UseGuards(JwtAuthGuard)
 export class CategorizerController {
   private readonly logger = new Logger(CategorizerController.name);
 
   constructor(private readonly categorizerService: CategorizerService) {}
 
   @Post('predict')
-  async predictCategory(@Body() body: { text: string; userId?: string }): Promise<Prediction> {
-    if (!body.text || body.text.trim().length === 0) {
-      throw new HttpException('Текст обязателен', HttpStatus.BAD_REQUEST);
-    }
-
+  async predictCategory(@Body() body: PredictCategoryDto): Promise<Prediction> {
     try {
       const prediction = await this.categorizerService.predict(body.text);
       return prediction;
@@ -28,9 +36,9 @@ export class CategorizerController {
   }
 
   @Post('retrain')
-  async forceRetrain(@Body() body: { full: boolean }) {
+  async forceRetrain(@Body() body: RetrainDto) {
     try {
-      return await this.categorizerService.forceRetrain(body.full);
+      return await this.categorizerService.forceRetrain(body.full ?? false);
     } catch (error) {
       if (error instanceof HttpException) throw error;
 

@@ -15,6 +15,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { UsersService } from './users.service';
+import { UpdateProfileDto, ChangePasswordDto } from './dto';
 
 @Controller('users')
 @UseGuards(JwtAuthGuard)
@@ -31,11 +32,11 @@ export class UsersController {
   }
 
   @Patch(':id')
-  async updateProfile(@Param('id') id: string, @Body() data: any, @Req() req: any) {
+  async updateProfile(@Param('id') id: string, @Body() dto: UpdateProfileDto, @Req() req: any) {
     if (req.user.id !== id) {
       throw new UnauthorizedException('Access denied');
     }
-    return this.usersService.updateProfile(id, data);
+    return this.usersService.updateProfile(id, dto);
   }
 
   @Post(':id/avatar')
@@ -51,7 +52,7 @@ export class UsersController {
   @Post(':id/change-password')
   async changePassword(
     @Param('id') id: string,
-    @Body() body: { oldPassword: string; newPassword: string },
+    @Body() body: ChangePasswordDto,
     @Req() req: any,
   ) {
     if (req.user.id !== id) {

@@ -1,8 +1,10 @@
-import { Body, Controller, Get, Param, Post, Patch, Delete } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Patch, Delete, UseGuards } from '@nestjs/common';
 import { CardsService } from './cards.service';
-import { CreateCard } from '@/types/models/cards';
+import { JwtAuthGuard } from '@/auth/jwt-auth.guard';
+import { CreateCardDto, UpdateCardDto } from './dto';
 
 @Controller('balances')
+@UseGuards(JwtAuthGuard)
 export class CardsController {
   constructor(private readonly cardsService: CardsService) {}
 
@@ -22,13 +24,13 @@ export class CardsController {
   }
 
   @Post()
-  addCard(@Body() card: CreateCard) {
-    return this.cardsService.addCard(card);
+  addCard(@Body() dto: CreateCardDto) {
+    return this.cardsService.addCard(dto);
   }
 
   @Patch(':id')
-  updateCard(@Param('id') id: string, @Body() card: Partial<CreateCard>) {
-    return this.cardsService.updateCard(Number(id), card);
+  updateCard(@Param('id') id: string, @Body() dto: UpdateCardDto) {
+    return this.cardsService.updateCard(Number(id), dto);
   }
 
   @Delete(':id')
@@ -36,3 +38,4 @@ export class CardsController {
     return this.cardsService.deleteCard(Number(id));
   }
 }
+

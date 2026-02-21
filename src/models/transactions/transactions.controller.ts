@@ -1,8 +1,20 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
-import { TransactionCreate } from '@/types';
+import { JwtAuthGuard } from '@/auth/jwt-auth.guard';
+import { CreateTransactionDto, UpdateTransactionDto } from './dto';
 
 @Controller('transactions')
+@UseGuards(JwtAuthGuard)
 export class TransactionsController {
   constructor(private readonly transactionsService: TransactionsService) {}
 
@@ -12,8 +24,11 @@ export class TransactionsController {
   }
 
   @Get('user/:userId')
-  getTransactionsByUserId(@Param('userId') userId: string) {
-    return this.transactionsService.getTransactionsByUserId(userId);
+  getTransactionsByUserId(
+    @Param('userId') userId: string,
+    @Query('type') type?: 'expense' | 'revenue',
+  ) {
+    return this.transactionsService.getTransactionsByUserId(userId, type);
   }
 
   @Get(':id')
@@ -22,13 +37,13 @@ export class TransactionsController {
   }
 
   @Post()
-  createTransaction(@Body() transaction: TransactionCreate) {
-    return this.transactionsService.createTransaction(transaction);
+  createTransaction(@Body() dto: CreateTransactionDto) {
+    return this.transactionsService.createTransaction(dto);
   }
 
   @Patch(':id')
-  updateTransaction(@Body() transaction: Partial<TransactionCreate>, @Param('id') id: number) {
-    return this.transactionsService.updateTransaction(Number(id), transaction);
+  updateTransaction(@Body() dto: UpdateTransactionDto, @Param('id') id: number) {
+    return this.transactionsService.updateTransaction(Number(id), dto);
   }
 
   @Delete(':id')
@@ -36,3 +51,4 @@ export class TransactionsController {
     return this.transactionsService.deleteTransaction(Number(id));
   }
 }
+

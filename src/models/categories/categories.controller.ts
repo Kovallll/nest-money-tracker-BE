@@ -10,12 +10,15 @@ import {
   HttpStatus,
   Logger,
   OnModuleInit,
+  UseGuards,
 } from '@nestjs/common';
 import { CategoriesService } from './categories.service';
 import { CategorizerService } from '@/categorizer/categorizer.service';
-import { CreateCategoryItem } from '@/types';
+import { JwtAuthGuard } from '@/auth/jwt-auth.guard';
+import { CreateCategoryDto, UpdateCategoryDto, AddExampleDto } from './dto';
 
 @Controller('categories')
+@UseGuards(JwtAuthGuard)
 export class CategoriesController implements OnModuleInit {
   private readonly logger = new Logger(CategoriesController.name);
 
@@ -56,9 +59,9 @@ export class CategoriesController implements OnModuleInit {
   }
 
   @Post()
-  async createCategory(@Body() category: CreateCategoryItem) {
+  async createCategory(@Body() dto: CreateCategoryDto) {
     try {
-      const result = await this.categoriesService.createCategory(category);
+      const result = await this.categoriesService.createCategory(dto);
 
       // Уведомляем ML
       this.notifyML();
@@ -70,9 +73,9 @@ export class CategoriesController implements OnModuleInit {
   }
 
   @Patch(':id')
-  async updateCategory(@Param('id') id: string, @Body() category: Partial<CreateCategoryItem>) {
+  async updateCategory(@Param('id') id: string, @Body() dto: UpdateCategoryDto) {
     try {
-      const result = await this.categoriesService.updateCategory(id, category);
+      const result = await this.categoriesService.updateCategory(id, dto);
 
       // Уведомляем ML
       this.notifyML();
@@ -102,18 +105,14 @@ export class CategoriesController implements OnModuleInit {
   }
 
   @Post(':id/examples')
-  async addExample(@Param('id') categoryId: string, @Body() body: { example: string }) {
-    if (!body.example || body.example.trim().length === 0) {
-      throw new HttpException('Пример не может быть пустым', HttpStatus.BAD_REQUEST);
-    }
-
+  async addExample(@Param('id') categoryId: string, @Body() body: AddExampleDto) {
     try {
       await this.categoriesService.addExample(categoryId, body.example.trim());
 
       // Уведомляем ML
       this.notifyML();
 
-      return { added: true, example: body.example };
+      return { added: true, example: body.example.trim() };
     } catch (error) {
       throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
     }

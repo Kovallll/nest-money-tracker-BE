@@ -25,7 +25,9 @@ export class TransactionsService implements OnModuleInit {
     }
     const userId: string = userRes.rows[0].id;
 
-    const cardRes = await this.pool.query('SELECT id FROM cards WHERE user_id = $1 LIMIT 1', [userId]);
+    const cardRes = await this.pool.query('SELECT id FROM cards WHERE user_id = $1 LIMIT 1', [
+      userId,
+    ]);
     if (cardRes.rows.length === 0) {
       this.logger.warn('⚠️ Нет карт у пользователя — seed транзакций пропущен');
       return;
@@ -47,7 +49,16 @@ export class TransactionsService implements OnModuleInit {
       await this.pool.query(
         `INSERT INTO transactions (user_id, card_id, category_id, type, amount, title, description, date)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [userId, cardId, categoryId || null, t.type, t.amount, t.title, t.description ?? null, t.date],
+        [
+          userId,
+          cardId,
+          categoryId || null,
+          t.type,
+          t.amount,
+          t.title,
+          t.description ?? null,
+          t.date,
+        ],
       );
     }
 
@@ -77,11 +88,16 @@ export class TransactionsService implements OnModuleInit {
     return rows.map((r) => this.mapRow(r));
   }
 
-  async getTransactionsByUserId(userId: string): Promise<Transaction[]> {
-    const { rows } = await this.pool.query(
-      'SELECT * FROM transactions WHERE user_id = $1 ORDER BY date DESC, id DESC',
-      [userId],
-    );
+  async getTransactionsByUserId(
+    userId: string,
+    type?: 'expense' | 'revenue',
+  ): Promise<Transaction[]> {
+    const query =
+      type == null
+        ? 'SELECT * FROM transactions WHERE user_id = $1 ORDER BY date DESC, id DESC'
+        : 'SELECT * FROM transactions WHERE user_id = $1 AND type = $2 ORDER BY date DESC, id DESC';
+    const params = type == null ? [userId] : [userId, type];
+    const { rows } = await this.pool.query(query, params);
     return rows.map((r) => this.mapRow(r));
   }
 
@@ -109,7 +125,10 @@ export class TransactionsService implements OnModuleInit {
     return this.mapRow(rows[0]);
   }
 
-  async updateTransaction(id: number, dto: Partial<TransactionCreate>): Promise<Transaction | null> {
+  async updateTransaction(
+    id: number,
+    dto: Partial<TransactionCreate>,
+  ): Promise<Transaction | null> {
     const existing = await this.getTransactionById(id);
     if (!existing) return null;
 
@@ -147,3 +166,4 @@ export class TransactionsService implements OnModuleInit {
     return { success: (result.rowCount ?? 0) > 0 };
   }
 }
+

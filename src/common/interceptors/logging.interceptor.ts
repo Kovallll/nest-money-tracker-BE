@@ -2,11 +2,15 @@ import { Injectable, NestInterceptor, ExecutionContext, CallHandler, Logger } fr
 import { Observable, throwError } from 'rxjs';
 import { tap, catchError } from 'rxjs/operators';
 
-function safeStringify(obj: any, maxLen = 1000): string {
+const MAX_LOG_LENGTH = 2000;
+
+function safeStringify(obj: unknown, maxLen = MAX_LOG_LENGTH): string {
+  if (obj === undefined) return 'undefined';
+  if (obj === null) return 'null';
   try {
     const s = JSON.stringify(obj);
-    return s && s.length > maxLen ? s.slice(0, maxLen) + '...' : s;
-  } catch (err) {
+    return s && s.length > maxLen ? s.slice(0, maxLen) + '...[truncated]' : s;
+  } catch {
     return '[unserializable]';
   }
 }
@@ -15,31 +19,34 @@ function safeStringify(obj: any, maxLen = 1000): string {
 export class LoggingInterceptor implements NestInterceptor {
   private readonly logger = new Logger('HTTP');
 
-  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const req = context.switchToHttp().getRequest();
-    const method = req?.method;
-    const url = req?.originalUrl ?? req?.url;
+    const method = req?.method ?? '?';
+    const url = req?.originalUrl ?? req?.url ?? '?';
     const body = req?.body;
     const params = req?.params;
     const query = req?.query;
     const start = Date.now();
 
     this.logger.log(
-      `${method} ${url} — body=${safeStringify(body)} params=${safeStringify(params)} query=${safeStringify(query)}`,
+      `→ IN  ${method} ${url} | body=${safeStringify(body)} | params=${safeStringify(params)} | query=${safeStringify(query)}`,
     );
 
     return next.handle().pipe(
-      tap(() => {
+      tap((data) => {
         const res = context.switchToHttp().getResponse();
-        const status = res?.statusCode;
+        const status = res?.statusCode ?? 200;
         const ms = Date.now() - start;
-        this.logger.log(`${method} ${url} ${status} — ${ms}ms`);
+        this.logger.log(
+          `← OUT ${method} ${url} ${status} ${ms}ms | response=${safeStringify(data)}`,
+        );
       }),
       catchError((err) => {
-        const res = context.switchToHttp().getResponse();
-        const status = res?.statusCode ?? 500;
+        const status = err?.status ?? err?.statusCode ?? 500;
         const ms = Date.now() - start;
-        this.logger.error(`${method} ${url} ${status} — ${ms}ms — error=${err?.message ?? err}`);
+        this.logger.error(
+          `← ERR ${method} ${url} ${status} ${ms}ms | message=${err?.message ?? err}`,
+        );
         return throwError(() => err);
       }),
     );

@@ -4,7 +4,6 @@ import { AppService } from './app.service';
 import { CardsModule } from './models/cards/cards.module';
 import { TransactionsModule } from './models/transactions/transactions.module';
 import { GoalsModule } from './models/goals/goals.module';
-import { ExpensesModule } from './models/expenses/expenses.module';
 import { StatisticsModule } from './models/statistics/statistics.module';
 import { SubscribtionsModule } from './models/subscribtions/subscribtions.module';
 import { UsersModule } from './users/users.module';
@@ -15,14 +14,15 @@ import { CategorizerModule } from './categorizer/categorizer.module';
 import { AuthModule } from './auth/auth.module';
 import { PushModule } from './push/push.module';
 import { TelegramModule } from './telegram/telegram.module';
+import { HealthController } from './health/health.controller';
+
 @Module({
-  controllers: [AppController],
+  controllers: [AppController, HealthController],
   providers: [AppService],
   imports: [
     CardsModule,
     TransactionsModule,
     GoalsModule,
-    ExpensesModule,
     StatisticsModule,
     SubscribtionsModule,
     UsersModule,

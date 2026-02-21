@@ -1,28 +1,46 @@
-import { Injectable } from '@nestjs/common';
-import { CategoriesService } from '../categories/categories.service';
+import { Injectable, Inject } from '@nestjs/common';
+import { Pool } from 'pg';
+import { PG_POOL } from '@/pg/pg.module';
 import { CategoryLineChartDto, ExpensesOverviewDto } from '@/types';
+
+interface TxRow {
+  category_id: string | null;
+  date: Date;
+  amount: string;
+}
 
 @Injectable()
 export class StatisticsService {
-  constructor(private readonly categoriesService: CategoriesService) {}
+  private readonly palette = [
+    '#4F46E5',
+    '#06B6D4',
+    '#F59E0B',
+    '#10B981',
+    '#EF4444',
+    '#8B5CF6',
+    '#22C55E',
+    '#0EA5E9',
+    '#E11D48',
+    '#84CC16',
+    '#A855F7',
+    '#F97316',
+  ];
 
-  /**
-   * Массив графиков: по одной линии "Expenses" для каждой категории за указанный год.
-   * monthsLimit=true — включаем месяцы с Jan..текущий (без будущих).
-   * top — можно ограничить топ-N категорий по сумме расходов (опционально).
-   */
+  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
+
   async getCategoryExpenseLineChartsByYear(params?: {
     year?: number;
     monthsLimitToCurrent?: boolean;
     top?: number;
     locale?: string;
-  }) {
-    const year = 2025;
+    userId?: string;
+  }): Promise<CategoryLineChartDto[]> {
+    const year = params?.year ?? new Date().getFullYear();
     const locale = params?.locale ?? 'en';
     const limitToCurrent = params?.monthsLimitToCurrent ?? true;
     const top = params?.top;
+    const userId = params?.userId;
 
-    const categories = await this.categoriesService.getCategories();
     const now = new Date();
     const lastMonthIndex = limitToCurrent && year === now.getFullYear() ? now.getMonth() : 11;
 
@@ -30,134 +48,109 @@ export class StatisticsService {
       new Date(year, m, 1).toLocaleString(locale, { month: 'short' }),
     );
 
-    // Готовим палитру
-    const palette = [
-      '#4F46E5',
-      '#06B6D4',
-      '#F59E0B',
-      '#10B981',
-      '#EF4444',
-      '#8B5CF6',
-      '#22C55E',
-      '#0EA5E9',
-      '#E11D48',
-      '#84CC16',
-      '#A855F7',
-      '#F97316',
-    ];
+    const transactions = await this.fetchExpenseTransactions(year, lastMonthIndex, userId);
+    const categories = await this.fetchCategoriesMap();
 
-    const charts = categories.map((cat, idx) => {
-      const monthly = new Array(lastMonthIndex + 1).fill(0);
+    const byCategory = this.groupExpensesByCategoryAndMonth(transactions, year, lastMonthIndex);
 
-      for (const t of cat.expenses ?? []) {
-        // ожидается, что t.date — строка/Date
-        const d = new Date(t.date as any);
-        if (d.getFullYear() !== year) continue;
-        const m = d.getMonth();
-        if (m <= lastMonthIndex) monthly[m] += t.amount;
-      }
-
-      return {
-        categoryId: cat.id,
-        title: cat.title,
+    const charts: CategoryLineChartDto[] = [];
+    for (const [categoryId, monthly] of byCategory.entries()) {
+      const title = categories.get(categoryId) ?? categoryId ?? 'Без категории';
+      charts.push({
+        categoryId: categoryId ?? '',
+        title,
         labels,
         datasets: [
           {
             label: 'Expenses',
             data: monthly.map((v) => +v.toFixed(2)),
-            borderColor: palette[idx % palette.length],
+            borderColor: this.palette[charts.length % this.palette.length],
             backgroundColor: 'transparent',
             tension: 0.3,
             pointRadius: 2,
             fill: false,
           },
         ],
-      } as CategoryLineChartDto;
-    });
+      });
+    }
 
+    const sum = (arr: number[]) => arr.reduce((s, v) => s + v, 0);
     const sorted = charts.sort((a, b) => sum(b.datasets[0].data) - sum(a.datasets[0].data));
-
     return typeof top === 'number' ? sorted.slice(0, top) : sorted;
   }
 
-  async getExpensesOverview(params?: { monthsBar?: number; topK?: number; locale?: string }) {
+  async getExpensesOverview(params?: {
+    monthsBar?: number;
+    topK?: number;
+    locale?: string;
+    userId?: string;
+  }): Promise<ExpensesOverviewDto> {
     const monthsBar = params?.monthsBar ?? 6;
     const topK = params?.topK ?? 5;
     const locale = params?.locale ?? 'en';
+    const userId = params?.userId;
 
     const now = new Date();
     const year = now.getFullYear();
     const currentMonth = now.getMonth();
 
-    const barMonths = buildLastMonths(monthsBar, now);
+    const barMonths = this.buildLastMonths(monthsBar, now);
     const barLabels = barMonths.map((d) => d.toLocaleString(locale, { month: 'short' }));
 
-    const lineMonths = buildLastMonths(12, now);
+    const lineMonths = this.buildLastMonths(12, now);
     const lineLabels = lineMonths.map((d) => d.toLocaleString(locale, { month: 'short' }));
 
-    const categories = await this.categoriesService.getCategories();
+    const categories = await this.fetchCategoriesMap();
+    const transactions = await this.fetchExpenseTransactionsForOverview(now, userId);
+
+    const byCategoryAndMonth = new Map<string, Map<number, number>>();
+    for (const t of transactions) {
+      const catId = t.category_id ?? '';
+      const monthKey = t.date.getFullYear() * 12 + t.date.getMonth();
+      if (!byCategoryAndMonth.has(catId)) {
+        byCategoryAndMonth.set(catId, new Map());
+      }
+      const monthMap = byCategoryAndMonth.get(catId)!;
+      monthMap.set(monthKey, (monthMap.get(monthKey) ?? 0) + parseFloat(t.amount));
+    }
 
     const pieLabels: string[] = [];
     const pieData: number[] = [];
-
-    for (const cat of categories) {
-      const sum = (cat.expenses ?? [])
-        .filter((t) => {
-          const d = new Date(t.date as any);
-          return d.getFullYear() === year && d.getMonth() === currentMonth;
-        })
-        .reduce((s, t) => s + t.amount, 0);
-
-      pieLabels.push(cat.title);
+    const currentMonthKey = year * 12 + currentMonth;
+    const categoryIds = Array.from(byCategoryAndMonth.keys()).filter(Boolean);
+    for (const catId of categoryIds) {
+      const title = categories.get(catId) ?? catId;
+      const monthMap = byCategoryAndMonth.get(catId)!;
+      const sum = monthMap.get(currentMonthKey) ?? 0;
+      pieLabels.push(title);
       pieData.push(+sum.toFixed(2));
     }
+    const pieColors = pieData.map((_, i) => this.palette[i % this.palette.length]);
 
-    const palette = [
-      '#4F46E5',
-      '#06B6D4',
-      '#F59E0B',
-      '#10B981',
-      '#EF4444',
-      '#8B5CF6',
-      '#22C55E',
-      '#0EA5E9',
-      '#E11D48',
-      '#84CC16',
-      '#A855F7',
-      '#F97316',
-    ];
-    const pieColors = pieData.map((_, i) => palette[i % palette.length]);
-
-    // ---- Bar: по категориям за последние N месяцев (топ-K по сумме)
-    // Посчитаем суммы по каждой категории по месяцам
     type CatSeries = { id: string; title: string; series: number[]; total: number };
-    const barSeries: CatSeries[] = categories.map((cat) => {
+    const barSeries: CatSeries[] = categoryIds.map((catId) => {
+      const title = categories.get(catId) ?? catId;
+      const monthMap = byCategoryAndMonth.get(catId)!;
       const series = barMonths.map((m) => {
-        const sum = (cat.expenses ?? [])
-          .filter((t) => isSameMonth(new Date(t.date as any), m))
-          .reduce((s, t) => s + t.amount, 0);
-        return +sum.toFixed(2);
+        const key = m.getFullYear() * 12 + m.getMonth();
+        return +(monthMap.get(key) ?? 0).toFixed(2);
       });
-      return { id: cat.id, title: cat.title, series, total: series.reduce((s, v) => s + v, 0) };
+      const total = series.reduce((s, v) => s + v, 0);
+      return { id: catId, title, series, total };
     });
-
-    // Оставим только топ-K категорий по суммарным расходам за период
     const topBar = barSeries.sort((a, b) => b.total - a.total).slice(0, topK);
-
     const barDatasets = topBar.map((c, i) => ({
       label: c.title,
       data: c.series,
-      backgroundColor: hexWithAlpha(palette[i % palette.length], 0.6),
+      backgroundColor: this.hexWithAlpha(this.palette[i % this.palette.length], 0.6),
     }));
 
-    // ---- Line: сумма по всем категориям за 12 месяцев
     const lineData = lineMonths.map((m) => {
-      const monthSum = categories.reduce((acc, cat) => {
-        const s = (cat.expenses ?? [])
-          .filter((t) => isSameMonth(new Date(t.date as any), m))
-          .reduce((s, t) => s + t.amount, 0);
-        return acc + s;
-      }, 0);
+      const key = m.getFullYear() * 12 + m.getMonth();
+      let monthSum = 0;
+      for (const [, monthMap] of byCategoryAndMonth) {
+        monthSum += monthMap.get(key) ?? 0;
+      }
       return +monthSum.toFixed(2);
     });
 
@@ -185,28 +178,92 @@ export class StatisticsService {
       meta: { monthIndex: currentMonth, year, monthsBar, topK },
     };
   }
-}
 
-function buildLastMonths(n: number, ref: Date): Date[] {
-  const arr: Date[] = [];
-  const start = new Date(ref.getFullYear(), ref.getMonth(), 1);
-  for (let i = n - 1; i >= 0; i--) {
-    arr.push(new Date(start.getFullYear(), start.getMonth() - i, 1));
+  private async fetchExpenseTransactions(
+    year: number,
+    lastMonthIndex: number,
+    userId?: string,
+  ): Promise<TxRow[]> {
+    const start = new Date(year, 0, 1);
+    const end = new Date(year, lastMonthIndex + 1, 0);
+    const sql = userId
+      ? `SELECT category_id, date, amount FROM transactions
+         WHERE type = 'expense' AND user_id = $1 AND date >= $2 AND date <= $3`
+      : `SELECT category_id, date, amount FROM transactions
+         WHERE type = 'expense' AND date >= $1 AND date <= $2`;
+    const params = userId ? [userId, start, end] : [start, end];
+    const { rows } = await this.pool.query(sql, params);
+    return rows.map((r) => ({
+      category_id: r.category_id,
+      date: r.date instanceof Date ? r.date : new Date(r.date),
+      amount: r.amount,
+    }));
   }
-  return arr;
-}
-function isSameMonth(d: Date, m: Date) {
-  return d.getFullYear() === m.getFullYear() && d.getMonth() === m.getMonth();
-}
-function hexWithAlpha(hex: string, alpha = 1) {
-  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)!;
-  const r = parseInt(m[1], 16),
-    g = parseInt(m[2], 16),
-    b = parseInt(m[3], 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
 
-function sum(arr: number[]) {
-  return arr.reduce((s, v) => s + v, 0);
+  private async fetchExpenseTransactionsForOverview(ref: Date, userId?: string): Promise<TxRow[]> {
+    const start = new Date(ref.getFullYear(), ref.getMonth() - 11, 1);
+    const end = new Date(ref.getFullYear(), ref.getMonth() + 1, 0);
+    const sql = userId
+      ? `SELECT category_id, date, amount FROM transactions
+         WHERE type = 'expense' AND user_id = $1 AND date >= $2 AND date <= $3`
+      : `SELECT category_id, date, amount FROM transactions
+         WHERE type = 'expense' AND date >= $1 AND date <= $2`;
+    const params = userId ? [userId, start, end] : [start, end];
+    const { rows } = await this.pool.query(sql, params);
+    return rows.map((r) => ({
+      category_id: r.category_id,
+      date: r.date instanceof Date ? r.date : new Date(r.date),
+      amount: r.amount,
+    }));
+  }
+
+  private async fetchCategoriesMap(): Promise<Map<string, string>> {
+    const { rows } = await this.pool.query('SELECT id, name FROM categories');
+    const map = new Map<string, string>();
+    for (const r of rows) {
+      map.set(r.id, r.name);
+    }
+    return map;
+  }
+
+  private groupExpensesByCategoryAndMonth(
+    transactions: TxRow[],
+    year: number,
+    lastMonthIndex: number,
+  ): Map<string, number[]> {
+    const byCategory = new Map<string, number[]>();
+    for (const t of transactions) {
+      const catId = t.category_id ?? '';
+      if (!byCategory.has(catId)) {
+        byCategory.set(catId, new Array(lastMonthIndex + 1).fill(0));
+      }
+      const d = t.date instanceof Date ? t.date : new Date(t.date);
+      if (d.getFullYear() !== year) continue;
+      const m = d.getMonth();
+      if (m <= lastMonthIndex) {
+        const arr = byCategory.get(catId)!;
+        arr[m] += parseFloat(t.amount);
+      }
+    }
+    return byCategory;
+  }
+
+  private buildLastMonths(n: number, ref: Date): Date[] {
+    const arr: Date[] = [];
+    const start = new Date(ref.getFullYear(), ref.getMonth(), 1);
+    for (let i = n - 1; i >= 0; i--) {
+      arr.push(new Date(start.getFullYear(), start.getMonth() - i, 1));
+    }
+    return arr;
+  }
+
+  private hexWithAlpha(hex: string, alpha = 1): string {
+    const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    if (!m) return hex;
+    const r = parseInt(m[1], 16);
+    const g = parseInt(m[2], 16);
+    const b = parseInt(m[3], 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
 }
 

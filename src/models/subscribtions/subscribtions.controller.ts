@@ -1,8 +1,22 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  HttpCode,
+  HttpStatus,
+  NotFoundException,
+  UseGuards,
+} from '@nestjs/common';
 import { SubscribtionsService } from './subscribtions.service';
-import { SubscribeItem } from '@/types';
+import { JwtAuthGuard } from '@/auth/jwt-auth.guard';
+import { CreateSubscriptionDto, UpdateSubscriptionDto } from './dto';
 
 @Controller('subscribtions')
+@UseGuards(JwtAuthGuard)
 export class SubscribtionsController {
   constructor(private readonly subscribtionsService: SubscribtionsService) {}
 
@@ -11,24 +25,37 @@ export class SubscribtionsController {
     return this.subscribtionsService.getAll();
   }
 
+  @Get('user/:userId')
+  getByUserId(@Param('userId') userId: string) {
+    return this.subscribtionsService.getByUserId(userId);
+  }
+
   @Get(':id')
-  getOne(@Param('id') id: string) {
-    return this.subscribtionsService.getById(Number(id));
+  async getOne(@Param('id') id: string) {
+    const item = await this.subscribtionsService.getById(id);
+    if (!item) throw new NotFoundException(`Subscription with id=${id} not found`);
+    return item;
   }
 
   @Post()
-  create(@Body() dto: Omit<SubscribeItem, 'id'>) {
-    return this.subscribtionsService.create(dto);
+  create(@Body() dto: CreateSubscriptionDto) {
+    return this.subscribtionsService.create({
+      ...dto,
+      type: dto.type ?? '',
+      lastCharge: dto.lastCharge ?? null,
+      isActive: dto.isActive ?? true,
+    });
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: Partial<SubscribeItem>) {
-    return this.subscribtionsService.update(Number(id), dto);
+  update(@Param('id') id: string, @Body() dto: UpdateSubscriptionDto) {
+    return this.subscribtionsService.update(id, dto);
   }
 
   @Delete(':id')
+  @HttpCode(HttpStatus.OK)
   remove(@Param('id') id: string) {
-    this.subscribtionsService.delete(Number(id));
-    return { message: `Subscription ${id} deleted successfully` };
+    return this.subscribtionsService.delete(id);
   }
 }
+
