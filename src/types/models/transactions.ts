@@ -3,6 +3,8 @@ export type Transaction = {
   userId: string;
   cardId: string;
   categoryId: string;
+  /** Category name (from JOIN when listing by user). */
+  category?: string | null;
   type: 'expense' | 'revenue';
   amount: number;
   /** Currency code (e.g. BYN, USD). Default BYN if missing. */

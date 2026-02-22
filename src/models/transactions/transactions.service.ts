@@ -73,6 +73,7 @@ export class TransactionsService implements OnModuleInit {
       userId: row.user_id,
       cardId: String(row.card_id),
       categoryId: row.category_id ?? '',
+      category: row.category_name ?? row.category ?? null,
       type: row.type,
       amount: parseFloat(row.amount),
       currencyCode: row.currency_code ?? 'BYN',
@@ -95,10 +96,12 @@ export class TransactionsService implements OnModuleInit {
     userId: string,
     type?: 'expense' | 'revenue',
   ): Promise<Transaction[]> {
+    const base =
+      'SELECT t.*, c.name as category_name FROM transactions t LEFT JOIN categories c ON t.category_id = c.id WHERE t.user_id = $1';
     const query =
       type == null
-        ? 'SELECT * FROM transactions WHERE user_id = $1 ORDER BY date DESC, id DESC'
-        : 'SELECT * FROM transactions WHERE user_id = $1 AND type = $2 ORDER BY date DESC, id DESC';
+        ? `${base} ORDER BY t.date DESC, t.id DESC`
+        : `${base} AND t.type = $2 ORDER BY t.date DESC, t.id DESC`;
     const params = type == null ? [userId] : [userId, type];
     const { rows } = await this.pool.query(query, params);
     return rows.map((r) => this.mapRow(r));
