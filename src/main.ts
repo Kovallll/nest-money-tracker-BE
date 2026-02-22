@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
+import { join } from 'path';
 import { AppModule } from './app.module';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
@@ -20,6 +21,10 @@ async function bootstrap() {
 
   // Global prefix
   app.setGlobalPrefix('api');
+
+  // Serve uploaded avatars at /api/uploads/avatars/...
+  const uploadsPath = join(process.cwd(), 'uploads');
+  app.use('/api/uploads', require('express').static(uploadsPath));
 
   app.enableCors({
     origin: '*',

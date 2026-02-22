@@ -8,6 +8,8 @@ import {
 import { Pool } from 'pg';
 import { PG_POOL } from '../pg/pg.module';
 import * as bcrypt from 'bcrypt';
+import * as fs from 'fs';
+import * as path from 'path';
 
 @Injectable()
 export class UsersService {
@@ -58,10 +60,26 @@ export class UsersService {
   }
 
   async saveAvatar(userId: string, file: any): Promise<string> {
-    // Сохранение файла и получение URL
-    // Здесь интеграция с S3 или локальным хранилищем
-    const avatarUrl = `/uploads/avatars/${userId}-${Date.now()}.jpg`;
+    if (!file?.buffer && !file?.path) {
+      throw new BadRequestException('No file uploaded');
+    }
 
+    const ext = path.extname(file.originalname) || '.jpg';
+    const filename = `${userId}-${Date.now()}${ext}`;
+    const uploadsDir = path.join(process.cwd(), 'uploads', 'avatars');
+
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+
+    const filePath = path.join(uploadsDir, filename);
+    if (file.buffer) {
+      fs.writeFileSync(filePath, file.buffer);
+    } else {
+      fs.renameSync(file.path, filePath);
+    }
+
+    const avatarUrl = `/uploads/avatars/${filename}`;
     await this.pool.query('UPDATE users SET avatar = $1 WHERE id = $2', [avatarUrl, userId]);
 
     return avatarUrl;
