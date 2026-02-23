@@ -29,6 +29,11 @@ export class CreateSubscriptionDto {
   amount: number;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(10)
+  currencyCode?: string;
+
+  @IsOptional()
   @IsDateString()
   lastCharge?: string | null;
 
