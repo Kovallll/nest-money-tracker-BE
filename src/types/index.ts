@@ -40,6 +40,8 @@ export interface SubscribeItem {
   subscribeName: string;
   subscribeDate: string;
   amount: number;
+  /** ISO 4217 currency code (e.g. BYN, USD, EUR). Default BYN if missing. */
+  currencyCode?: string;
   lastCharge: string | null;
   type: string;
   description?: string | null;

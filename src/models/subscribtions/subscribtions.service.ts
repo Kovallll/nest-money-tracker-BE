@@ -61,6 +61,7 @@ export class SubscribtionsService implements OnModuleInit {
           ? row.subscribe_date.toISOString().split('T')[0]
           : (row.subscribe_date as string),
       amount: parseFloat(row.amount as string),
+      currencyCode: (row.currency_code as string) ?? 'BYN',
       lastCharge:
         row.last_charge != null
           ? row.last_charge instanceof Date
@@ -95,9 +96,10 @@ export class SubscribtionsService implements OnModuleInit {
 
   async create(dto: Omit<SubscribeItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<SubscribeItem> {
     const id = uuid4();
+    const currencyCode = dto.currencyCode ?? 'BYN';
     await this.pool.query(
-      `INSERT INTO subscriptions (id, user_id, category_id, subscribe_name, subscribe_date, amount, last_charge, type, description, is_active)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      `INSERT INTO subscriptions (id, user_id, category_id, subscribe_name, subscribe_date, amount, currency_code, last_charge, type, description, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         id,
         dto.userId ?? null,
@@ -105,6 +107,7 @@ export class SubscribtionsService implements OnModuleInit {
         dto.subscribeName,
         dto.subscribeDate,
         dto.amount,
+        currencyCode,
         dto.lastCharge ?? null,
         dto.type ?? null,
         dto.description ?? null,
@@ -127,12 +130,13 @@ export class SubscribtionsService implements OnModuleInit {
            subscribe_name  = COALESCE($3, subscribe_name),
            subscribe_date  = COALESCE($4, subscribe_date),
            amount          = COALESCE($5, amount),
-           last_charge     = COALESCE($6, last_charge),
-           type            = COALESCE($7, type),
-           description     = COALESCE($8, description),
-           is_active       = COALESCE($9, is_active),
+           currency_code   = COALESCE($6, currency_code),
+           last_charge     = COALESCE($7, last_charge),
+           type            = COALESCE($8, type),
+           description     = COALESCE($9, description),
+           is_active       = COALESCE($10, is_active),
            updated_at      = NOW()
-       WHERE id = $10
+       WHERE id = $11
        RETURNING *`,
       [
         dto.userId ?? null,
@@ -140,6 +144,7 @@ export class SubscribtionsService implements OnModuleInit {
         dto.subscribeName ?? null,
         dto.subscribeDate ?? null,
         dto.amount ?? null,
+        dto.currencyCode ?? null,
         dto.lastCharge ?? null,
         dto.type ?? null,
         dto.description ?? null,
