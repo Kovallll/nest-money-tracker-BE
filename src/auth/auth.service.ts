@@ -88,8 +88,13 @@ export class AuthService {
     };
   }
 
-  async refresh(refreshToken: string) {
-    // Проверка refresh token
+  async refresh(refreshTokenInput: string) {
+    const refreshToken = refreshTokenInput?.trim();
+    if (!refreshToken) {
+      throw new UnauthorizedException('Недействительный refresh token');
+    }
+
+    // Проверка refresh token в БД (не перезаписываем его при refresh — избегаем гонки при двух вкладках/окнах)
     const { rows } = await this.pool.query(
       `SELECT id, email, name, lastname, phone, avatar FROM users 
        WHERE refresh_token = $1 AND token_expires > NOW()`,
@@ -101,7 +106,8 @@ export class AuthService {
       throw new UnauthorizedException('Недействительный refresh token');
     }
 
-    const tokens = await this.generateTokens(user.id, user.email);
+    // Только новый access token; refresh token не ротируем — возвращаем тот же, в БД не трогаем
+    const accessToken = this.generateAccessToken(user.id, user.email);
 
     return {
       user: {
@@ -112,7 +118,8 @@ export class AuthService {
         phone: user.phone ?? '',
         avatar: user.avatar ?? null,
       },
-      ...tokens,
+      accessToken,
+      refreshToken,
     };
   }
 
@@ -124,21 +131,24 @@ export class AuthService {
     return { success: true };
   }
 
+  private generateAccessToken(userId: string, email: string): string {
+    const payload = { sub: userId, email };
+    return this.jwtService.sign(payload, {
+      expiresIn: '15m',
+    });
+  }
+
   private async generateTokens(userId: string, email: string) {
     const payload = { sub: userId, email };
 
-    // Access token (15 минут)
-    const accessToken = this.jwtService.sign(payload, {
-      expiresIn: '15m',
-    });
+    const accessToken = this.generateAccessToken(userId, email);
 
-    // Refresh token (7 дней)
+    // Refresh token (7 дней) — сохраняем в БД только при login/register
     const refreshToken = this.jwtService.sign(payload, {
       expiresIn: '7d',
       secret: process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET,
     });
 
-    // Сохранение refresh token в БД
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7);
 

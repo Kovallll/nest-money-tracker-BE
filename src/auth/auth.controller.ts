@@ -20,12 +20,7 @@ export class AuthController {
 
   @Post('login')
   login(@Body() body: LoginDto) {
-    return this.authService.login(
-      body.email,
-      body.password,
-      body.pushSubscription,
-      body.userAgent,
-    );
+    return this.authService.login(body.email, body.password, body.pushSubscription, body.userAgent);
   }
 
   @Post('refresh')
@@ -34,7 +29,6 @@ export class AuthController {
   }
 
   @Post('logout')
-  @UseGuards(JwtAuthGuard)
   logout(@Req() req: any) {
     return this.authService.logout(req.user.id);
   }
