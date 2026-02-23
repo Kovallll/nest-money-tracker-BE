@@ -92,7 +92,7 @@ export class CategoriesService {
     return categories.map((cat) => ({
       id: cat.id,
       title: cat.title,
-      icon: cat.icon || 'pi pi-table',
+      icon: cat.icon || 'category',
       color: cat.color,
       totalExpenses: parseFloat(cat.total_expenses),
       totalRevenues: parseFloat(cat.total_revenues),
@@ -145,7 +145,7 @@ export class CategoriesService {
     return categories.map((cat) => ({
       id: cat.id,
       title: cat.title,
-      icon: cat.icon || 'pi pi-table',
+      icon: cat.icon || 'category',
       color: cat.color,
       totalExpenses: parseFloat(cat.total_expenses),
       totalRevenues: parseFloat(cat.total_revenues),
@@ -188,7 +188,7 @@ export class CategoriesService {
       `INSERT INTO categories (id, name, icon, color) 
        VALUES ($1, $2, $3, $4) 
        RETURNING id, name as title, icon, color`,
-      [id, category.name, category.icon || '📦', category.color || '#CCCCCC'],
+      [id, category.name, category.icon || 'category', category.color || '#CCCCCC'],
     );
 
     // Добавляем примеры

@@ -1,4 +1,12 @@
-import { Injectable, Inject, Logger, OnModuleInit, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Inject,
+  Logger,
+  OnModuleInit,
+  NotFoundException,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { Pool } from 'pg';
 import { v4 as uuid4 } from 'uuid';
 import { PG_POOL } from '@/pg/pg.module';
@@ -51,22 +59,26 @@ export class GoalsService implements OnModuleInit {
   }
 
   private mapRow(row: Record<string, unknown>): GoalItem {
+    const num = (v: unknown): number => {
+      if (typeof v === 'number' && !Number.isNaN(v)) return v;
+      const n = Number(v);
+      return Number.isNaN(n) ? 0 : n;
+    };
+    const dateStr = (v: unknown): string => {
+      if (v == null) return '';
+      if (v instanceof Date) return v.toISOString().split('T')[0];
+      return String(v);
+    };
     return {
-      id: row.id as string,
-      userId: row.user_id as string,
+      id: String(row.id ?? ''),
+      userId: (row.user_id as string) ?? undefined,
       categoryId: (row.category_id as string) ?? null,
-      title: row.title as string,
-      targetBudget: parseFloat(row.target_budget as string),
-      goalBudget: parseFloat(row.goal_budget as string),
+      title: String(row.title ?? ''),
+      targetBudget: num(row.target_budget),
+      goalBudget: num(row.goal_budget),
       currencyCode: (row.currency_code as string) ?? 'BYN',
-      startDate:
-        row.start_date instanceof Date
-          ? row.start_date.toISOString().split('T')[0]
-          : (row.start_date as string),
-      endDate:
-        row.end_date instanceof Date
-          ? row.end_date.toISOString().split('T')[0]
-          : (row.end_date as string),
+      startDate: dateStr(row.start_date),
+      endDate: dateStr(row.end_date),
       status: (row.status as string) ?? 'active',
       createdAt: (row.created_at as Date)?.toISOString?.() ?? undefined,
       updatedAt: (row.updated_at as Date)?.toISOString?.() ?? undefined,
@@ -94,22 +106,34 @@ export class GoalsService implements OnModuleInit {
   async createGoal(dto: Omit<GoalItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<GoalItem> {
     const id = uuid4();
     const currencyCode = dto.currencyCode ?? 'BYN';
-    await this.pool.query(
-      `INSERT INTO goals (id, user_id, category_id, title, target_budget, goal_budget, currency_code, start_date, end_date, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [
-        id,
-        dto.userId ?? null,
-        dto.categoryId ?? null,
-        dto.title,
-        dto.targetBudget,
-        dto.goalBudget,
-        currencyCode,
-        dto.startDate,
-        dto.endDate,
-        dto.status ?? 'active',
-      ],
-    );
+    const targetBudget = Number(dto.targetBudget);
+    const goalBudget = Number(dto.goalBudget);
+    if (Number.isNaN(targetBudget) || targetBudget < 0 || Number.isNaN(goalBudget) || goalBudget < 0) {
+      throw new BadRequestException('targetBudget и goalBudget должны быть неотрицательными числами');
+    }
+    try {
+      await this.pool.query(
+        `INSERT INTO goals (id, user_id, category_id, title, target_budget, goal_budget, currency_code, start_date, end_date, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          id,
+          dto.userId ?? null,
+          dto.categoryId ?? null,
+          String(dto.title ?? '').trim(),
+          targetBudget,
+          goalBudget,
+          currencyCode,
+          dto.startDate ?? '',
+          dto.endDate ?? '',
+          dto.status ?? 'active',
+        ],
+      );
+    } catch (err) {
+      this.logger.error(`createGoal INSERT failed: ${(err as Error)?.message}`, (err as Error)?.stack);
+      throw new InternalServerErrorException(
+        'Не удалось создать цель. Проверьте формат данных и повторите попытку.',
+      );
+    }
     const goal = await this.getGoalById(id);
     if (!goal) throw new NotFoundException('Goal not found after create');
     return goal;

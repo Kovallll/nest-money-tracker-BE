@@ -5,7 +5,7 @@ export const seedCategories = [
   {
     id: uuid4(),
     name: 'Auto',
-    icon: '🚗',
+    icon: 'directions_car',
     color: '#FF6B6B',
     examples: [
       'бензин',
@@ -33,7 +33,7 @@ export const seedCategories = [
   {
     id: uuid4(),
     name: 'Transport',
-    icon: '🚕',
+    icon: 'local_taxi',
     color: '#4ECDC4',
     examples: [
       'такси яндекс',
@@ -61,7 +61,7 @@ export const seedCategories = [
   {
     id: uuid4(),
     name: 'Food',
-    icon: '🍔',
+    icon: 'restaurant',
     color: '#45B7D1',
     examples: [
       'хлеб белый',
@@ -118,7 +118,7 @@ export const seedCategories = [
   {
     id: uuid4(),
     name: 'Shopping',
-    icon: '🛍️',
+    icon: 'shopping_cart',
     color: '#96CEB4',
     examples: [
       'футболка новая',
@@ -166,7 +166,7 @@ export const seedCategories = [
   {
     id: uuid4(),
     name: 'Entertainments',
-    icon: '🎭',
+    icon: 'movie',
     color: '#FFEAA7',
     examples: [
       'кино билеты',
@@ -265,7 +265,7 @@ export const seedCategories = [
   {
     id: uuid4(),
     name: 'Medicine',
-    icon: '💊',
+    icon: 'local_hospital',
     color: '#98D8C8',
     examples: [
       'аптека парацетамол',
@@ -325,7 +325,7 @@ export const seedCategories = [
   {
     id: uuid4(),
     name: 'Other',
-    icon: '📦',
+    icon: 'category',
     color: '#DDA0DD',
     examples: [
       'подарок другу',
