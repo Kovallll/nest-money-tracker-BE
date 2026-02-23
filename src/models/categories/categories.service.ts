@@ -84,6 +84,7 @@ export class CategoriesService {
         amount: t.amount,
         type: t.type,
         date: t.date,
+        title: t.title ?? t.name ?? t.description ?? '',
         description: t.description,
       });
     }
@@ -136,6 +137,7 @@ export class CategoriesService {
         amount: t.amount,
         type: t.type,
         date: t.date,
+        title: t.title ?? t.name ?? t.description ?? '',
         description: t.description,
       });
     }
