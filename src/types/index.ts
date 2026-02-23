@@ -26,6 +26,8 @@ export interface GoalItem {
   title: string;
   targetBudget: number;
   goalBudget: number;
+  /** ISO 4217 currency code (e.g. BYN, EUR). Default BYN if missing. */
+  currencyCode?: string;
   startDate: string;
   endDate: string;
   status: string;

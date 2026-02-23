@@ -31,9 +31,19 @@ export class GoalsService implements OnModuleInit {
     for (const g of seedGoals) {
       const id = uuid4();
       await this.pool.query(
-        `INSERT INTO goals (id, user_id, title, target_budget, goal_budget, start_date, end_date, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [id, userId, g.title, g.targetBudget, g.goalBudget, g.startDate, g.endDate, 'active'],
+        `INSERT INTO goals (id, user_id, title, target_budget, goal_budget, currency_code, start_date, end_date, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          id,
+          userId,
+          g.title,
+          g.targetBudget,
+          g.goalBudget,
+          (g as { currencyCode?: string }).currencyCode ?? 'BYN',
+          g.startDate,
+          g.endDate,
+          'active',
+        ],
       );
     }
 
@@ -48,6 +58,7 @@ export class GoalsService implements OnModuleInit {
       title: row.title as string,
       targetBudget: parseFloat(row.target_budget as string),
       goalBudget: parseFloat(row.goal_budget as string),
+      currencyCode: (row.currency_code as string) ?? 'BYN',
       startDate:
         row.start_date instanceof Date
           ? row.start_date.toISOString().split('T')[0]
@@ -82,9 +93,10 @@ export class GoalsService implements OnModuleInit {
 
   async createGoal(dto: Omit<GoalItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<GoalItem> {
     const id = uuid4();
+    const currencyCode = dto.currencyCode ?? 'BYN';
     await this.pool.query(
-      `INSERT INTO goals (id, user_id, category_id, title, target_budget, goal_budget, start_date, end_date, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      `INSERT INTO goals (id, user_id, category_id, title, target_budget, goal_budget, currency_code, start_date, end_date, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         id,
         dto.userId ?? null,
@@ -92,6 +104,7 @@ export class GoalsService implements OnModuleInit {
         dto.title,
         dto.targetBudget,
         dto.goalBudget,
+        currencyCode,
         dto.startDate,
         dto.endDate,
         dto.status ?? 'active',
@@ -108,16 +121,17 @@ export class GoalsService implements OnModuleInit {
 
     const { rows } = await this.pool.query(
       `UPDATE goals
-       SET user_id       = COALESCE($1, user_id),
-           category_id   = COALESCE($2, category_id),
-           title        = COALESCE($3, title),
-           target_budget = COALESCE($4, target_budget),
-           goal_budget   = COALESCE($5, goal_budget),
-           start_date   = COALESCE($6, start_date),
-           end_date     = COALESCE($7, end_date),
-           status       = COALESCE($8, status),
-           updated_at   = NOW()
-       WHERE id = $9
+       SET user_id        = COALESCE($1, user_id),
+           category_id    = COALESCE($2, category_id),
+           title          = COALESCE($3, title),
+           target_budget  = COALESCE($4, target_budget),
+           goal_budget    = COALESCE($5, goal_budget),
+           currency_code  = COALESCE($6, currency_code),
+           start_date     = COALESCE($7, start_date),
+           end_date       = COALESCE($8, end_date),
+           status         = COALESCE($9, status),
+           updated_at     = NOW()
+       WHERE id = $10
        RETURNING *`,
       [
         dto.userId ?? null,
@@ -125,6 +139,7 @@ export class GoalsService implements OnModuleInit {
         dto.title ?? null,
         dto.targetBudget ?? null,
         dto.goalBudget ?? null,
+        dto.currencyCode ?? null,
         dto.startDate ?? null,
         dto.endDate ?? null,
         dto.status ?? null,
