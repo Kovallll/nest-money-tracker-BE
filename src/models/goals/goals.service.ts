@@ -113,12 +113,11 @@ export class GoalsService implements OnModuleInit {
     }
     try {
       await this.pool.query(
-        `INSERT INTO goals (id, user_id, category_id, title, target_budget, goal_budget, currency_code, start_date, end_date, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        `INSERT INTO goals (id, user_id, title, target_budget, goal_budget, currency_code, start_date, end_date, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           id,
           dto.userId ?? null,
-          dto.categoryId ?? null,
           String(dto.title ?? '').trim(),
           targetBudget,
           goalBudget,
