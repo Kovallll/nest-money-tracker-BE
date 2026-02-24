@@ -15,6 +15,10 @@ export class PushService {
     );
   }
 
+  getVapidPublicKey(): { publicKey: string } {
+    return { publicKey: process.env.VAPID_PUBLIC_KEY ?? '' };
+  }
+
   async getStatus(userId: string) {
     const { rows } = await this.pool.query(
       'SELECT push_enabled, push_subscription FROM users WHERE id = $1',

@@ -15,6 +15,12 @@ import * as path from 'path';
 export class UsersService {
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
 
+  ensureCanAccessUser(currentUserId: string, targetId: string): void {
+    if (currentUserId !== targetId) {
+      throw new UnauthorizedException('Access denied');
+    }
+  }
+
   async getProfile(userId: string) {
     const { rows } = await this.pool.query(
       `SELECT id, email, name, lastname, phone, avatar, created_at 

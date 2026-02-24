@@ -15,10 +15,11 @@ import { AuthModule } from './auth/auth.module';
 import { PushModule } from './push/push.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { HealthController } from './health/health.controller';
+import { HealthService } from './health/health.service';
 
 @Module({
   controllers: [AppController, HealthController],
-  providers: [AppService],
+  providers: [AppService, HealthService],
   imports: [
     CardsModule,
     TransactionsModule,

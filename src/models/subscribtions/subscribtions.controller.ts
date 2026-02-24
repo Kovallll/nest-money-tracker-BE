@@ -9,7 +9,6 @@ import {
   HttpCode,
   HttpStatus,
   BadRequestException,
-  NotFoundException,
   UseGuards,
 } from '@nestjs/common';
 import { SubscribtionsService } from './subscribtions.service';
@@ -37,20 +36,13 @@ export class SubscribtionsController {
   }
 
   @Get(':id')
-  async getOne(@Param('id') id: string) {
-    const item = await this.subscribtionsService.getById(id);
-    if (!item) throw new NotFoundException(`Subscription with id=${id} not found`);
-    return item;
+  getOne(@Param('id') id: string) {
+    return this.subscribtionsService.getByIdOrThrow(id);
   }
 
   @Post()
   create(@Body() dto: CreateSubscriptionDto) {
-    return this.subscribtionsService.create({
-      ...dto,
-      type: dto.type ?? '',
-      lastCharge: dto.lastCharge ?? null,
-      isActive: dto.isActive ?? true,
-    });
+    return this.subscribtionsService.create(dto);
   }
 
   @Patch(':id')

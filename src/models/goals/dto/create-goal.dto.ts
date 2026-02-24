@@ -1,11 +1,4 @@
-import {
-  IsString,
-  IsNumber,
-  IsOptional,
-  IsDateString,
-  Min,
-  MaxLength,
-} from 'class-validator';
+import { IsString, IsNumber, IsOptional, IsDateString, Min, MaxLength } from 'class-validator';
 
 export class CreateGoalDto {
   @IsOptional()
@@ -39,4 +32,10 @@ export class CreateGoalDto {
   @IsOptional()
   @IsString()
   status?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(10)
+  currencyCode?: string;
 }
+

@@ -7,46 +7,24 @@ import {
   Patch,
   Post,
   BadRequestException,
-  HttpException,
-  HttpStatus,
-  Logger,
-  OnModuleInit,
   UseGuards,
 } from '@nestjs/common';
 import { CategoriesService } from './categories.service';
-import { CategorizerService } from '@/categorizer/categorizer.service';
 import { JwtAuthGuard } from '@/auth/jwt-auth.guard';
 import { CreateCategoryDto, UpdateCategoryDto, AddExampleDto } from './dto';
 
 @Controller('categories')
 @UseGuards(JwtAuthGuard)
-export class CategoriesController implements OnModuleInit {
-  private readonly logger = new Logger(CategoriesController.name);
-
-  constructor(
-    private readonly categoriesService: CategoriesService,
-    private readonly categorizerService: CategorizerService,
-  ) {}
-
-  async onModuleInit() {
-    // Инициализация базовых категорий при старте
-    await this.categoriesService.initDatabase();
-
-    // Уведомляем ML о новых данных
-    try {
-      await this.categorizerService.forceRetrain();
-    } catch (e) {
-      this.logger.warn('ML сервис недоступен, будет использован watcher');
-    }
-  }
+export class CategoriesController {
+  constructor(private readonly categoriesService: CategoriesService) {}
 
   @Get()
-  async getCategories() {
-    return await this.categoriesService.getCategories();
+  getCategories() {
+    return this.categoriesService.getCategories();
   }
 
   @Get('user/:userId')
-  async getCategoriesByUserId(@Param('userId') userId: string) {
+  getCategoriesByUserId(@Param('userId') userId: string) {
     if (!userId?.trim()) {
       throw new BadRequestException(
         'Укажите userId в пути: GET /api/categories/user/:userId (например, UUID пользователя).',
@@ -56,84 +34,34 @@ export class CategoriesController implements OnModuleInit {
   }
 
   @Get(':id')
-  async getCategory(@Param('id') id: string) {
-    const category = await this.categoriesService.getCategoryById(id);
-    if (!category) {
-      throw new HttpException('Категория не найдена', HttpStatus.NOT_FOUND);
-    }
-    return category;
+  getCategory(@Param('id') id: string) {
+    return this.categoriesService.getCategoryByIdOrThrow(id);
   }
 
   @Post()
-  async createCategory(@Body() dto: CreateCategoryDto) {
-    try {
-      const result = await this.categoriesService.createCategory(dto);
-
-      // Уведомляем ML
-      this.notifyML();
-
-      return result;
-    } catch (error) {
-      throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
-    }
+  createCategory(@Body() dto: CreateCategoryDto) {
+    return this.categoriesService.createCategory(dto);
   }
 
   @Patch(':id')
-  async updateCategory(@Param('id') id: string, @Body() dto: UpdateCategoryDto) {
-    try {
-      const result = await this.categoriesService.updateCategory(id, dto);
-
-      // Уведомляем ML
-      this.notifyML();
-
-      return result;
-    } catch (error) {
-      throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
-    }
+  updateCategory(@Param('id') id: string, @Body() dto: UpdateCategoryDto) {
+    return this.categoriesService.updateCategory(id, dto);
   }
 
   @Delete(':id')
   async deleteCategory(@Param('id') id: string) {
-    try {
-      const deleted = await this.categoriesService.deleteCategory(id);
-
-      if (!deleted) {
-        throw new HttpException('Категория не найдена', HttpStatus.NOT_FOUND);
-      }
-
-      // Уведомляем ML
-      this.notifyML();
-
-      return { deleted: true };
-    } catch (error) {
-      throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
-    }
+    await this.categoriesService.deleteCategory(id);
+    return { deleted: true };
   }
 
   @Post(':id/examples')
   async addExample(@Param('id') categoryId: string, @Body() body: AddExampleDto) {
-    try {
-      await this.categoriesService.addExample(categoryId, body.example.trim());
-
-      // Уведомляем ML
-      this.notifyML();
-
-      return { added: true, example: body.example.trim() };
-    } catch (error) {
-      throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
-    }
+    await this.categoriesService.addExample(categoryId, body.example.trim());
+    return { added: true, example: body.example.trim() };
   }
 
   @Get(':id/examples')
-  async getExamples(@Param('id') categoryId: string) {
+  getExamples(@Param('id') categoryId: string) {
     return this.categoriesService.getExamples(categoryId);
   }
-
-  // Приватный метод для уведомления ML (не блокирует ответ)
-  private notifyML(): void {
-    this.categorizerService.forceRetrain().catch((err) => {
-      this.logger.warn(`Не удалось уведомить ML: ${err.message}`);
-    });
-  }
 }
-

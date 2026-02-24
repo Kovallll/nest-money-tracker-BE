@@ -9,7 +9,6 @@ import {
   HttpCode,
   HttpStatus,
   BadRequestException,
-  NotFoundException,
   UseGuards,
 } from '@nestjs/common';
 import { GoalsService } from './goals.service';
@@ -37,20 +36,13 @@ export class GoalsController {
   }
 
   @Get(':id')
-  async getOne(@Param('id') id: string) {
-    const goal = await this.goalsService.getGoalById(id);
-    if (!goal) throw new NotFoundException(`Goal with id ${id} not found`);
-    return goal;
+  getOne(@Param('id') id: string) {
+    return this.goalsService.getGoalByIdOrThrow(id);
   }
 
   @Post()
   create(@Body() dto: CreateGoalDto) {
-    return this.goalsService.createGoal({
-      ...dto,
-      status: dto.status ?? 'active',
-      startDate: dto.startDate ?? '',
-      endDate: dto.endDate ?? '',
-    });
+    return this.goalsService.createGoal(dto);
   }
 
   @Patch(':id')

@@ -4,6 +4,7 @@ import { v4 as uuid4 } from 'uuid';
 import { PG_POOL } from '@/pg/pg.module';
 import { SubscribeItem } from '@/types';
 import { seedSubscriptions } from './seed';
+import { CreateSubscriptionDto } from './dto';
 
 @Injectable()
 export class SubscribtionsService implements OnModuleInit {
@@ -94,7 +95,13 @@ export class SubscribtionsService implements OnModuleInit {
     return rows.length > 0 ? this.mapRow(rows[0]) : null;
   }
 
-  async create(dto: Omit<SubscribeItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<SubscribeItem> {
+  async getByIdOrThrow(id: string): Promise<SubscribeItem> {
+    const item = await this.getById(id);
+    if (!item) throw new NotFoundException(`Subscription with id=${id} not found`);
+    return item;
+  }
+
+  async create(dto: CreateSubscriptionDto): Promise<SubscribeItem> {
     const id = uuid4();
     const currencyCode = dto.currencyCode ?? 'BYN';
     await this.pool.query(
@@ -109,7 +116,7 @@ export class SubscribtionsService implements OnModuleInit {
         dto.amount,
         currencyCode,
         dto.lastCharge ?? null,
-        dto.type ?? null,
+        dto.type ?? '',
         dto.description ?? null,
         dto.isActive !== false,
       ],

@@ -12,6 +12,7 @@ import { v4 as uuid4 } from 'uuid';
 import { PG_POOL } from '@/pg/pg.module';
 import { GoalItem } from '@/types';
 import { seedGoals } from './seed';
+import { CreateGoalDto } from './dto';
 
 @Injectable()
 export class GoalsService implements OnModuleInit {
@@ -103,13 +104,26 @@ export class GoalsService implements OnModuleInit {
     return rows.length > 0 ? this.mapRow(rows[0]) : null;
   }
 
-  async createGoal(dto: Omit<GoalItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<GoalItem> {
+  async getGoalByIdOrThrow(id: string): Promise<GoalItem> {
+    const goal = await this.getGoalById(id);
+    if (!goal) throw new NotFoundException(`Goal with id ${id} not found`);
+    return goal;
+  }
+
+  async createGoal(dto: CreateGoalDto): Promise<GoalItem> {
     const id = uuid4();
     const currencyCode = dto.currencyCode ?? 'BYN';
     const targetBudget = Number(dto.targetBudget);
     const goalBudget = Number(dto.goalBudget);
-    if (Number.isNaN(targetBudget) || targetBudget < 0 || Number.isNaN(goalBudget) || goalBudget < 0) {
-      throw new BadRequestException('targetBudget и goalBudget должны быть неотрицательными числами');
+    if (
+      Number.isNaN(targetBudget) ||
+      targetBudget < 0 ||
+      Number.isNaN(goalBudget) ||
+      goalBudget < 0
+    ) {
+      throw new BadRequestException(
+        'targetBudget и goalBudget должны быть неотрицательными числами',
+      );
     }
     try {
       await this.pool.query(
@@ -128,7 +142,10 @@ export class GoalsService implements OnModuleInit {
         ],
       );
     } catch (err) {
-      this.logger.error(`createGoal INSERT failed: ${(err as Error)?.message}`, (err as Error)?.stack);
+      this.logger.error(
+        `createGoal INSERT failed: ${(err as Error)?.message}`,
+        (err as Error)?.stack,
+      );
       throw new InternalServerErrorException(
         'Не удалось создать цель. Проверьте формат данных и повторите попытку.',
       );

@@ -11,9 +11,7 @@ export class PushController {
   @Get('vapid-key')
   @Public()
   getVapidPublicKey() {
-    return {
-      publicKey: process.env.VAPID_PUBLIC_KEY,
-    };
+    return this.pushService.getVapidPublicKey();
   }
 
   @Get(':id/push-status')

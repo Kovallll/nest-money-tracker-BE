@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
   ConflictException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { Pool } from 'pg';
 import { v4 as uuid4 } from 'uuid';
@@ -12,11 +13,29 @@ import { PG_POOL } from '@/pg/pg.module';
 import { CategoryItem, CreateCategoryItem } from '@/types';
 import { Tabs } from '@/enums';
 import { seedCategories } from './seed';
+import { CategorizerService } from '@/categorizer/categorizer.service';
+
 @Injectable()
-export class CategoriesService {
+export class CategoriesService implements OnModuleInit {
   private readonly logger = new Logger(CategoriesService.name);
 
-  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
+  constructor(
+    @Inject(PG_POOL) private readonly pool: Pool,
+    private readonly categorizerService: CategorizerService,
+  ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.initDatabase();
+    this.notifyML().catch((err) =>
+      this.logger.warn(`ML сервис недоступен при старте: ${err.message}`),
+    );
+  }
+
+  private notifyML(): Promise<unknown> {
+    return this.categorizerService.forceRetrain().catch((err) => {
+      this.logger.warn(`Не удалось уведомить ML: ${err.message}`);
+    });
+  }
 
   async initDatabase(): Promise<void> {
     this.logger.log('🌱 Инициализация базовых категорий...');
@@ -164,6 +183,14 @@ export class CategoriesService {
     return all.find((c) => c.id === id) || null;
   }
 
+  async getCategoryByIdOrThrow(id: string): Promise<CategoryItem> {
+    const category = await this.getCategoryById(id);
+    if (!category) {
+      throw new NotFoundException('Категория не найдена');
+    }
+    return category;
+  }
+
   private static readonly UUID_REGEX =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -202,6 +229,7 @@ export class CategoriesService {
     }
 
     this.logger.log(`➕ Создана категория: ${category.name} (${id})`);
+    this.notifyML();
 
     return {
       id: rows[0].id,
@@ -235,6 +263,7 @@ export class CategoriesService {
     }
 
     this.logger.log(`✏️ Обновлена категория: ${id}`);
+    this.notifyML();
 
     return {
       id: rows[0].id,
@@ -248,7 +277,7 @@ export class CategoriesService {
     };
   }
 
-  async deleteCategory(id: string): Promise<boolean> {
+  async deleteCategory(id: string): Promise<void> {
     // Проверяем использование в транзакциях
     const { rows: used } = await this.pool.query(
       'SELECT 1 FROM transactions WHERE category_id = $1 LIMIT 1',
@@ -268,11 +297,11 @@ export class CategoriesService {
     const result = await this.pool.query('DELETE FROM categories WHERE id = $1', [id]);
 
     if (result.rowCount === 0) {
-      return false;
+      throw new NotFoundException('Категория не найдена');
     }
 
     this.logger.log(`🗑️ Удалена категория: ${id}`);
-    return true;
+    this.notifyML();
   }
 
   async addExample(categoryId: string, example: string): Promise<void> {
@@ -291,6 +320,7 @@ export class CategoriesService {
     );
 
     this.logger.log(`💡 Добавлен пример "${example}" к ${categoryId}`);
+    this.notifyML();
   }
 
   async getExamples(categoryId: string): Promise<string[]> {

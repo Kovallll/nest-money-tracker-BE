@@ -50,3 +50,4 @@ export class CreateSubscriptionDto {
   @IsBoolean()
   isActive?: boolean;
 }
+

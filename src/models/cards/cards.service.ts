@@ -1,4 +1,4 @@
-import { Injectable, Inject, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Inject, Logger, OnModuleInit, BadRequestException } from '@nestjs/common';
 import { Pool } from 'pg';
 import { PG_POOL } from '@/pg/pg.module';
 import { BalanceCard, CreateCard } from '@/types/models/cards';
@@ -121,7 +121,17 @@ export class CardsService implements OnModuleInit {
     return cards.map((c) => this.mapRow(c, txByCard[c.id] ?? []));
   }
 
-  async getCard(id: number): Promise<BalanceCard | null> {
+  private parseCardId(id: string): number {
+    const num = Number(id);
+    if (Number.isNaN(num) || !Number.isInteger(num) || num < 1) {
+      throw new BadRequestException(
+        `Некорректный id карты: ожидается целое число больше 0. Передано: "${id}". Для списка карт пользователя используйте GET /api/balances/user/:userId`,
+      );
+    }
+    return num;
+  }
+
+  async getCardById(id: number): Promise<BalanceCard | null> {
     const { rows } = await this.pool.query('SELECT * FROM cards WHERE id = $1', [id]);
     if (rows.length === 0) return null;
 
@@ -131,6 +141,10 @@ export class CardsService implements OnModuleInit {
     );
 
     return this.mapRow(rows[0], txRows.map((r) => this.mapTransaction(r)));
+  }
+
+  async getCard(id: string): Promise<BalanceCard | null> {
+    return this.getCardById(this.parseCardId(id));
   }
 
   async addCard(dto: CreateCard): Promise<BalanceCard> {
@@ -144,8 +158,9 @@ export class CardsService implements OnModuleInit {
     return this.mapRow(rows[0]);
   }
 
-  async updateCard(id: number, dto: Partial<CreateCard>): Promise<BalanceCard | null> {
-    const existing = await this.getCard(id);
+  async updateCard(id: string, dto: Partial<CreateCard>): Promise<BalanceCard | null> {
+    const numId = this.parseCardId(id);
+    const existing = await this.getCardById(numId);
     if (!existing) return null;
 
     const { rows } = await this.pool.query(
@@ -168,15 +183,16 @@ export class CardsService implements OnModuleInit {
         dto.branchName ?? null,
         dto.cardBalance ?? null,
         dto.currencyCode ?? null,
-        id,
+        numId,
       ],
     );
 
     return this.mapRow(rows[0]);
   }
 
-  async deleteCard(id: number): Promise<{ success: boolean }> {
-    const result = await this.pool.query('DELETE FROM cards WHERE id = $1', [id]);
+  async deleteCard(id: string): Promise<{ success: boolean }> {
+    const numId = this.parseCardId(id);
+    const result = await this.pool.query('DELETE FROM cards WHERE id = $1', [numId]);
     return { success: (result.rowCount ?? 0) > 0 };
   }
 }

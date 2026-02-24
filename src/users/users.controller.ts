@@ -10,7 +10,6 @@ import {
   Req,
   UploadedFile,
   UseInterceptors,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -24,27 +23,20 @@ export class UsersController {
 
   @Get(':id/profile')
   async getProfile(@Param('id') id: string, @Req() req: any) {
-    // Проверяем что пользователь запрашивает свой профиль
-    if (req.user.id !== id) {
-      throw new UnauthorizedException('Access denied');
-    }
+    this.usersService.ensureCanAccessUser(req.user.id, id);
     return this.usersService.getProfile(id);
   }
 
   @Patch(':id')
   async updateProfile(@Param('id') id: string, @Body() dto: UpdateProfileDto, @Req() req: any) {
-    if (req.user.id !== id) {
-      throw new UnauthorizedException('Access denied');
-    }
+    this.usersService.ensureCanAccessUser(req.user.id, id);
     return this.usersService.updateProfile(id, dto);
   }
 
   @Post(':id/avatar')
   @UseInterceptors(FileInterceptor('avatar'))
   async uploadAvatar(@Param('id') id: string, @UploadedFile() file: any, @Req() req: any) {
-    if (req.user.id !== id) {
-      throw new UnauthorizedException('Access denied');
-    }
+    this.usersService.ensureCanAccessUser(req.user.id, id);
     const avatarUrl = await this.usersService.saveAvatar(id, file);
     return { avatarUrl };
   }
@@ -55,25 +47,19 @@ export class UsersController {
     @Body() body: ChangePasswordDto,
     @Req() req: any,
   ) {
-    if (req.user.id !== id) {
-      throw new UnauthorizedException('Access denied');
-    }
+    this.usersService.ensureCanAccessUser(req.user.id, id);
     return this.usersService.changePassword(id, body.oldPassword, body.newPassword);
   }
 
   @Get(':id/stats')
   async getStats(@Param('id') id: string, @Req() req: any) {
-    if (req.user.id !== id) {
-      throw new UnauthorizedException('Access denied');
-    }
+    this.usersService.ensureCanAccessUser(req.user.id, id);
     return this.usersService.getStats(id);
   }
 
   @Delete(':id')
   async deleteAccount(@Param('id') id: string, @Req() req: any) {
-    if (req.user.id !== id) {
-      throw new UnauthorizedException('Access denied');
-    }
+    this.usersService.ensureCanAccessUser(req.user.id, id);
     return this.usersService.deleteAccount(id);
   }
 }
