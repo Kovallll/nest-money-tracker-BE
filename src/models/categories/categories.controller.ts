@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   BadRequestException,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { CategoriesService } from './categories.service';
@@ -49,8 +50,11 @@ export class CategoriesController {
   }
 
   @Delete(':id')
-  async deleteCategory(@Param('id') id: string) {
-    await this.categoriesService.deleteCategory(id);
+  async deleteCategory(
+    @Param('id') id: string,
+    @Query('reassignTo') reassignTo?: string,
+  ) {
+    await this.categoriesService.deleteCategory(id, reassignTo?.trim() || undefined);
     return { deleted: true };
   }
 

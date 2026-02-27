@@ -277,17 +277,39 @@ export class CategoriesService implements OnModuleInit {
     };
   }
 
-  async deleteCategory(id: string): Promise<void> {
-    // Проверяем использование в транзакциях
-    const { rows: used } = await this.pool.query(
-      'SELECT 1 FROM transactions WHERE category_id = $1 LIMIT 1',
-      [id],
-    );
-
-    if (used.length > 0) {
-      throw new ConflictException(
-        'Нельзя удалить категорию: к ней привязаны транзакции. Сначала измените или удалите эти транзакции.',
+  async deleteCategory(id: string, reassignTo?: string): Promise<void> {
+    // Опционально: переназначить транзакции/подписки/цели в другую категорию перед удалением
+    if (reassignTo) {
+      const targetExists = await this.pool.query('SELECT 1 FROM categories WHERE id = $1', [
+        reassignTo,
+      ]);
+      if (targetExists.rowCount === 0) {
+        throw new NotFoundException(`Категория назначения ${reassignTo} не найдена`);
+      }
+      await this.pool.query(
+        'UPDATE transactions SET category_id = $1 WHERE category_id = $2',
+        [reassignTo, id],
       );
+      await this.pool.query('UPDATE expenses SET category_id = $1 WHERE category_id = $2', [
+        reassignTo,
+        id,
+      ]);
+      await this.pool.query('UPDATE goals SET category_id = $1 WHERE category_id = $2', [
+        reassignTo,
+        id,
+      ]);
+      await this.pool.query('UPDATE subscriptions SET category_id = $1 WHERE category_id = $2', [
+        reassignTo,
+        id,
+      ]);
+    } else {
+      // Без переназначения — удаляем связанные транзакции и расходы, цели и подписки обнуляем
+      await this.pool.query('DELETE FROM transactions WHERE category_id = $1', [id]);
+      await this.pool.query('DELETE FROM expenses WHERE category_id = $1', [id]);
+      await this.pool.query('UPDATE goals SET category_id = NULL WHERE category_id = $1', [id]);
+      await this.pool.query('UPDATE subscriptions SET category_id = NULL WHERE category_id = $1', [
+        id,
+      ]);
     }
 
     // Удаляем примеры

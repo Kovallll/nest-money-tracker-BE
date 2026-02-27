@@ -142,12 +142,23 @@ export class GoalsService implements OnModuleInit {
         ],
       );
     } catch (err) {
-      this.logger.error(
-        `createGoal INSERT failed: ${(err as Error)?.message}`,
-        (err as Error)?.stack,
-      );
+      const pgErr = err as { code?: string; message?: string };
+      const msg = pgErr?.message ?? (err as Error)?.message ?? 'Unknown error';
+      this.logger.error(`createGoal INSERT failed: ${msg}`, (err as Error)?.stack);
+      // 23503 = foreign_key_violation (user_id или category_id не существует)
+      if (pgErr?.code === '23503') {
+        throw new BadRequestException(
+          'Пользователь с указанным ID не найден. Войдите заново и попробуйте снова.',
+        );
+      }
+      // 42703 = undefined_column (колонка не существует — нужно запустить миграцию)
+      if (pgErr?.code === '42703') {
+        throw new BadRequestException(
+          'Таблица goals устарела. Запустите миграцию: ALTER TABLE goals ADD COLUMN IF NOT EXISTS currency_code VARCHAR(3) NOT NULL DEFAULT \'BYN\';',
+        );
+      }
       throw new InternalServerErrorException(
-        'Не удалось создать цель. Проверьте формат данных и повторите попытку.',
+        'Не удалось создать цель. Проверьте логи сервера для деталей.',
       );
     }
     const goal = await this.getGoalById(id);
