@@ -12,6 +12,8 @@ export type Transaction = {
   title?: string | null;
   description?: string | null;
   date: string;
+  /** Payment method: cash or card. Optional. */
+  paymentMethod?: 'cash' | 'card' | null;
   createdAt?: string;
   updatedAt?: string;
 };

@@ -14,6 +14,7 @@ import { CategoryItem, CreateCategoryItem } from '@/types';
 import { Tabs } from '@/enums';
 import { seedCategories } from './seed';
 import { CategorizerService } from '@/categorizer/categorizer.service';
+import { VALID_CATEGORY_ICONS, DEFAULT_CATEGORY_ICON } from './valid-icons.const';
 
 @Injectable()
 export class CategoriesService implements OnModuleInit {
@@ -26,9 +27,24 @@ export class CategoriesService implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     await this.initDatabase();
+    await this.fixInvalidIcons();
     this.notifyML().catch((err) =>
       this.logger.warn(`ML сервис недоступен при старте: ${err.message}`),
     );
+  }
+
+  /** Обновляет категории со старыми/невалидными иконками на дефолтную. */
+  private async fixInvalidIcons(): Promise<void> {
+    const result = await this.pool.query(
+      `UPDATE categories 
+       SET icon = $1 
+       WHERE icon IS NULL OR icon = '' OR NOT (icon = ANY($2::text[]))
+       RETURNING id, name`,
+      [DEFAULT_CATEGORY_ICON, [...VALID_CATEGORY_ICONS]],
+    );
+    if (result.rowCount && result.rowCount > 0) {
+      this.logger.log(`🔧 Исправлено иконок категорий: ${result.rowCount}`);
+    }
   }
 
   private notifyML(): Promise<unknown> {

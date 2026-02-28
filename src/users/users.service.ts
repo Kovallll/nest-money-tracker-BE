@@ -35,22 +35,34 @@ export class UsersService {
     const values: any[] = [];
     let idx = 1;
 
-    if (data.name) {
+    if (data.name !== undefined) {
       fields.push(`name = $${idx++}`);
       values.push(data.name);
     }
-    if (data.lastname) {
+    if (data.lastname !== undefined) {
       fields.push(`lastname = $${idx++}`);
       values.push(data.lastname);
     }
-    if (data.phone) {
+    if (data.email !== undefined && data.email !== null && String(data.email).trim()) {
+      const trimmed = String(data.email).trim();
+      const { rows: existing } = await this.pool.query(
+        'SELECT id FROM users WHERE email = $1 AND id != $2',
+        [trimmed, userId],
+      );
+      if (existing.length > 0) {
+        throw new BadRequestException('Email уже занят другим пользователем');
+      }
+      fields.push(`email = $${idx++}`);
+      values.push(trimmed);
+    }
+    if (data.phone !== undefined) {
       fields.push(`phone = $${idx++}`);
       values.push(data.phone);
     }
 
     if (fields.length === 0) {
       throw new BadRequestException(
-        'Нет полей для обновления. Укажите хотя бы одно: name, lastname или phone.',
+        'Нет полей для обновления. Укажите хотя бы одно: name, lastname, email или phone.',
       );
     }
 

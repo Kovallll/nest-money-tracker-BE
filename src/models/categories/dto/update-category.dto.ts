@@ -1,4 +1,5 @@
-import { IsString, IsOptional, IsArray, MaxLength } from 'class-validator';
+import { IsString, IsOptional, IsArray, MaxLength, IsIn } from 'class-validator';
+import { VALID_CATEGORY_ICONS } from '../valid-icons.const';
 
 export class UpdateCategoryDto {
   @IsOptional()
@@ -8,7 +9,7 @@ export class UpdateCategoryDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(50)
+  @IsIn([...VALID_CATEGORY_ICONS])
   icon?: string;
 
   @IsOptional()

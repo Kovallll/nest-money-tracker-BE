@@ -216,7 +216,7 @@ export const seedCategories = [
   {
     id: uuid4(),
     name: 'Courses',
-    icon: '📚',
+    icon: 'school',
     color: '#F7DC6F',
     examples: [
       'курсы программирования',

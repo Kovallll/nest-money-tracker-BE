@@ -80,6 +80,7 @@ export class TransactionsService implements OnModuleInit {
       title: row.title ?? null,
       description: row.description ?? null,
       date: row.date instanceof Date ? row.date.toISOString().split('T')[0] : row.date,
+      paymentMethod: row.payment_method ?? null,
       createdAt: row.created_at?.toISOString?.() ?? row.created_at,
       updatedAt: row.updated_at?.toISOString?.() ?? row.updated_at,
     };
@@ -115,8 +116,8 @@ export class TransactionsService implements OnModuleInit {
   async createTransaction(dto: TransactionCreate): Promise<Transaction> {
     const currencyCode = dto.currencyCode ?? 'BYN';
     const { rows } = await this.pool.query(
-      `INSERT INTO transactions (user_id, card_id, category_id, type, amount, currency_code, title, description, date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO transactions (user_id, card_id, category_id, type, amount, currency_code, title, description, date, payment_method)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         dto.userId,
@@ -128,6 +129,7 @@ export class TransactionsService implements OnModuleInit {
         dto.title ?? null,
         dto.description ?? null,
         dto.date,
+        dto.paymentMethod ?? null,
       ],
     );
     return this.mapRow(rows[0]);
@@ -142,17 +144,18 @@ export class TransactionsService implements OnModuleInit {
 
     const { rows } = await this.pool.query(
       `UPDATE transactions
-       SET user_id       = COALESCE($1, user_id),
-           card_id       = COALESCE($2, card_id),
-           category_id   = COALESCE($3, category_id),
-           type          = COALESCE($4, type),
-           amount        = COALESCE($5, amount),
-           currency_code = COALESCE($6, currency_code),
-           title         = COALESCE($7, title),
-           description   = COALESCE($8, description),
-           date          = COALESCE($9, date),
-           updated_at    = NOW()
-       WHERE id = $10
+       SET user_id         = COALESCE($1, user_id),
+           card_id         = COALESCE($2, card_id),
+           category_id     = COALESCE($3, category_id),
+           type            = COALESCE($4, type),
+           amount          = COALESCE($5, amount),
+           currency_code   = COALESCE($6, currency_code),
+           title           = COALESCE($7, title),
+           description     = COALESCE($8, description),
+           date            = COALESCE($9, date),
+           payment_method  = COALESCE($10, payment_method),
+           updated_at      = NOW()
+       WHERE id = $11
        RETURNING *`,
       [
         dto.userId ?? null,
@@ -164,6 +167,7 @@ export class TransactionsService implements OnModuleInit {
         dto.title ?? null,
         dto.description ?? null,
         dto.date ?? null,
+        dto.paymentMethod ?? null,
         id,
       ],
     );

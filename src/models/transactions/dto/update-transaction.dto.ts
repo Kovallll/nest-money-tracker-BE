@@ -47,4 +47,9 @@ export class UpdateTransactionDto {
   @IsString()
   @IsIn(['BYN', 'USD', 'EUR', 'RUB'])
   currencyCode?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['cash', 'card'])
+  paymentMethod?: 'cash' | 'card';
 }
