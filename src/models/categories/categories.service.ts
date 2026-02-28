@@ -57,14 +57,16 @@ export class CategoriesService implements OnModuleInit {
     this.logger.log('🌱 Инициализация базовых категорий...');
 
     for (const cat of seedCategories) {
-      // Проверяем существование
-      const exists = await this.pool.query('SELECT 1 FROM categories WHERE name = $1', [cat.name]);
-
-      if (exists.rowCount === 0) {
-        // Создаем категорию
+      // Проверяем существование базовой категории (user_id IS NULL)
+      const existsBase = await this.pool.query(
+        'SELECT 1 FROM categories WHERE name = $1 AND user_id IS NULL',
+        [cat.name],
+      );
+      if ((existsBase.rowCount ?? 0) === 0) {
+        // Создаем базовую категорию (user_id = NULL — шаблон для всех)
         await this.pool.query(
-          `INSERT INTO categories (id, name, icon, color) 
-           VALUES ($1, $2, $3, $4)`,
+          `INSERT INTO categories (id, name, icon, color, user_id) 
+           VALUES ($1, $2, $3, $4, NULL)`,
           [cat.id, cat.name, cat.icon, cat.color],
         );
 
@@ -210,28 +212,28 @@ export class CategoriesService implements OnModuleInit {
   private static readonly UUID_REGEX =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-  async createCategory(category: CreateCategoryItem): Promise<CategoryItem> {
+  async createCategory(category: CreateCategoryItem, userId: string): Promise<CategoryItem> {
     // В БД id имеет тип UUID — используем переданный id только если это валидный UUID, иначе генерируем
     const id =
       category.id && CategoriesService.UUID_REGEX.test(category.id) ? category.id : uuid4();
 
-    // Проверяем уникальность по имени (id уникален по определению)
-    const exists = await this.pool.query('SELECT 1 FROM categories WHERE id = $1 OR name = $2', [
-      id,
-      category.name,
-    ]);
+    // Проверяем уникальность по имени у данного пользователя
+    const exists = await this.pool.query(
+      'SELECT 1 FROM categories WHERE user_id = $1 AND name = $2',
+      [userId, category.name],
+    );
 
-    if (exists?.rowCount ?? 0 > 0) {
+    if ((exists?.rowCount ?? 0) > 0) {
       throw new ConflictException(
-        'Категория с таким ID или именем уже существует. Укажите другой id или имя.',
+        'Категория с таким именем уже существует. Укажите другое имя.',
       );
     }
 
     const { rows } = await this.pool.query(
-      `INSERT INTO categories (id, name, icon, color) 
-       VALUES ($1, $2, $3, $4) 
+      `INSERT INTO categories (id, name, icon, color, user_id) 
+       VALUES ($1, $2, $3, $4, $5) 
        RETURNING id, name as title, icon, color`,
-      [id, category.name, category.icon || 'category', category.color || '#CCCCCC'],
+      [id, category.name, category.icon || 'category', category.color || '#CCCCCC', userId],
     );
 
     // Добавляем примеры
@@ -259,7 +261,12 @@ export class CategoriesService implements OnModuleInit {
     };
   }
 
-  async updateCategory(id: string, category: Partial<CreateCategoryItem>): Promise<CategoryItem> {
+  async updateCategory(
+    id: string,
+    category: Partial<CreateCategoryItem>,
+    userId: string,
+  ): Promise<CategoryItem> {
+    // Обновлять можно только свои категории (user_id = userId)
     const { rows } = await this.pool.query(
       `UPDATE categories 
        SET 
@@ -267,15 +274,19 @@ export class CategoriesService implements OnModuleInit {
          icon = COALESCE($2, icon),
          color = COALESCE($3, color),
          updated_at = NOW()
-       WHERE id = $4
+       WHERE id = $4 AND user_id = $5
        RETURNING id, name as title, icon, color`,
-      [category.name, category.icon, category.color, id],
+      [category.name, category.icon, category.color, id, userId],
     );
 
     if (rows.length === 0) {
-      throw new NotFoundException(
-        `Категория с id=${id} не найдена. Проверьте идентификатор или создайте категорию.`,
-      );
+      const exists = await this.pool.query('SELECT 1 FROM categories WHERE id = $1', [id]);
+      if ((exists.rowCount ?? 0) === 0) {
+        throw new NotFoundException(
+          `Категория с id=${id} не найдена. Проверьте идентификатор или создайте категорию.`,
+        );
+      }
+      throw new NotFoundException('Нельзя изменить базовую категорию. Создайте свою.');
     }
 
     this.logger.log(`✏️ Обновлена категория: ${id}`);
@@ -293,13 +304,29 @@ export class CategoriesService implements OnModuleInit {
     };
   }
 
-  async deleteCategory(id: string, reassignTo?: string): Promise<void> {
+  async deleteCategory(id: string, userId: string, reassignTo?: string): Promise<void> {
+    // Удалять можно только свои категории (user_id = userId)
+    const cat = await this.pool.query(
+      'SELECT id, user_id FROM categories WHERE id = $1',
+      [id],
+    );
+    if ((cat.rowCount ?? 0) === 0) {
+      throw new NotFoundException('Категория не найдена');
+    }
+    if (cat.rows[0].user_id === null) {
+      throw new NotFoundException('Нельзя удалить базовую категорию.');
+    }
+    if (cat.rows[0].user_id !== userId) {
+      throw new NotFoundException('Нет доступа к этой категории');
+    }
+
     // Опционально: переназначить транзакции/подписки/цели в другую категорию перед удалением
     if (reassignTo) {
-      const targetExists = await this.pool.query('SELECT 1 FROM categories WHERE id = $1', [
-        reassignTo,
-      ]);
-      if (targetExists.rowCount === 0) {
+      const targetExists = await this.pool.query(
+        'SELECT 1 FROM categories WHERE id = $1 AND (user_id = $2 OR user_id IS NULL)',
+        [reassignTo, userId],
+      );
+      if ((targetExists.rowCount ?? 0) === 0) {
         throw new NotFoundException(`Категория назначения ${reassignTo} не найдена`);
       }
       await this.pool.query(

@@ -8,6 +8,7 @@ import {
   Post,
   BadRequestException,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { CategoriesService } from './categories.service';
@@ -40,21 +41,26 @@ export class CategoriesController {
   }
 
   @Post()
-  createCategory(@Body() dto: CreateCategoryDto) {
-    return this.categoriesService.createCategory(dto);
+  createCategory(@Body() dto: CreateCategoryDto, @Req() req: { user: { id: string } }) {
+    return this.categoriesService.createCategory(dto, req.user.id);
   }
 
   @Patch(':id')
-  updateCategory(@Param('id') id: string, @Body() dto: UpdateCategoryDto) {
-    return this.categoriesService.updateCategory(id, dto);
+  updateCategory(
+    @Param('id') id: string,
+    @Body() dto: UpdateCategoryDto,
+    @Req() req: { user: { id: string } },
+  ) {
+    return this.categoriesService.updateCategory(id, dto, req.user.id);
   }
 
   @Delete(':id')
   async deleteCategory(
     @Param('id') id: string,
+    @Req() req: { user: { id: string } },
     @Query('reassignTo') reassignTo?: string,
   ) {
-    await this.categoriesService.deleteCategory(id, reassignTo?.trim() || undefined);
+    await this.categoriesService.deleteCategory(id, req.user.id, reassignTo?.trim() || undefined);
     return { deleted: true };
   }
 

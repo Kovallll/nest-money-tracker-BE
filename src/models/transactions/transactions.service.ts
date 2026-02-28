@@ -40,9 +40,10 @@ export class TransactionsService implements OnModuleInit {
       let categoryId: string = '';
 
       if (t.categoryName) {
-        const cat = await this.pool.query('SELECT id FROM categories WHERE name = $1 LIMIT 1', [
-          t.categoryName,
-        ]);
+        const cat = await this.pool.query(
+          'SELECT id FROM categories WHERE name = $1 AND user_id IS NULL LIMIT 1',
+          [t.categoryName],
+        );
         categoryId = cat.rows[0]?.id ?? '';
       }
 

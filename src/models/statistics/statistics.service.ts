@@ -49,7 +49,7 @@ export class StatisticsService {
     );
 
     const transactions = await this.fetchExpenseTransactions(year, lastMonthIndex, userId);
-    const categories = await this.fetchCategoriesMap();
+    const categories = await this.fetchCategoriesMap(userId);
 
     const byCategory = this.groupExpensesByCategoryAndMonth(transactions, year, lastMonthIndex);
 
@@ -100,7 +100,7 @@ export class StatisticsService {
     const lineMonths = this.buildLastMonths(12, now);
     const lineLabels = lineMonths.map((d) => d.toLocaleString(locale, { month: 'short' }));
 
-    const categories = await this.fetchCategoriesMap();
+    const categories = await this.fetchCategoriesMap(userId);
     const transactions = await this.fetchExpenseTransactionsForOverview(now, userId);
 
     const byCategoryAndMonth = new Map<string, Map<number, number>>();
@@ -217,8 +217,12 @@ export class StatisticsService {
     }));
   }
 
-  private async fetchCategoriesMap(): Promise<Map<string, string>> {
-    const { rows } = await this.pool.query('SELECT id, name FROM categories');
+  private async fetchCategoriesMap(userId?: string): Promise<Map<string, string>> {
+    const sql = userId
+      ? 'SELECT id, name FROM categories WHERE user_id = $1 OR user_id IS NULL'
+      : 'SELECT id, name FROM categories';
+    const params = userId ? [userId] : [];
+    const { rows } = await this.pool.query(sql, params);
     const map = new Map<string, string>();
     for (const r of rows) {
       map.set(r.id, r.name);
