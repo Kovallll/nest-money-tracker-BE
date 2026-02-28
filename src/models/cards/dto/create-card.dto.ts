@@ -22,9 +22,10 @@ export class CreateCardDto {
   @MaxLength(255)
   bankName: string;
 
+  @IsOptional()
   @IsString()
-  @MaxLength(255)
-  branchName: string;
+  @MaxLength(5)
+  expiry?: string;
 
   @IsOptional()
   @IsNumber()

@@ -3,7 +3,7 @@ export interface SeedCard {
   cardNumber: string;
   cardType: string;
   bankName: string;
-  branchName: string;
+  expiry?: string;
   cardBalance: number;
 }
 
@@ -13,7 +13,7 @@ export const seedCards: SeedCard[] = [
     cardNumber: '**** **** **** 7721',
     cardType: 'Debit',
     bankName: 'Тинькофф',
-    branchName: 'Москва',
+    expiry: '12/28',
     cardBalance: 84350.5,
   },
   {
@@ -21,7 +21,7 @@ export const seedCards: SeedCard[] = [
     cardNumber: '**** **** **** 3390',
     cardType: 'Debit',
     bankName: 'Сбербанк',
-    branchName: 'Санкт-Петербург',
+    expiry: '06/29',
     cardBalance: 215000.0,
   },
   {
@@ -29,7 +29,7 @@ export const seedCards: SeedCard[] = [
     cardNumber: '**** **** **** 5012',
     cardType: 'Credit',
     bankName: 'Альфа-Банк',
-    branchName: 'Москва',
+    expiry: '03/27',
     cardBalance: 42780.25,
   },
   {
@@ -37,7 +37,7 @@ export const seedCards: SeedCard[] = [
     cardNumber: '**** **** **** 6648',
     cardType: 'Debit',
     bankName: 'ВТБ',
-    branchName: 'Казань',
+    expiry: '09/30',
     cardBalance: 9120.0,
   },
   {
@@ -45,7 +45,7 @@ export const seedCards: SeedCard[] = [
     cardNumber: '**** **** **** 1185',
     cardType: 'Savings',
     bankName: 'Райффайзен',
-    branchName: 'Москва',
+    expiry: '01/29',
     cardBalance: 530000.0,
   },
 ];

@@ -31,9 +31,9 @@ export class CardsService implements OnModuleInit {
     for (const c of seedCards) {
       const currencyCode = (c as { currencyCode?: string }).currencyCode ?? 'BYN';
       await this.pool.query(
-        `INSERT INTO cards (user_id, card_name, card_number, card_type, bank_name, branch_name, card_balance, currency_code)
+        `INSERT INTO cards (user_id, card_name, card_number, card_type, bank_name, expiry, card_balance, currency_code)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [userId, c.cardName, c.cardNumber, c.cardType, c.bankName, c.branchName, c.cardBalance, currencyCode],
+        [userId, c.cardName, c.cardNumber, c.cardType, c.bankName, (c as { expiry?: string }).expiry ?? null, c.cardBalance, currencyCode],
       );
     }
 
@@ -48,7 +48,7 @@ export class CardsService implements OnModuleInit {
       cardNumber: row.card_number,
       cardType: row.card_type ?? '',
       bankName: row.bank_name ?? '',
-      branchName: row.branch_name ?? '',
+      expiry: row.expiry ?? null,
       cardBalance: parseFloat(row.card_balance),
       currencyCode: row.currency_code ?? 'BYN',
       isActive: row.is_active,
@@ -150,10 +150,10 @@ export class CardsService implements OnModuleInit {
   async addCard(dto: CreateCard): Promise<BalanceCard> {
     const currencyCode = dto.currencyCode ?? 'BYN';
     const { rows } = await this.pool.query(
-      `INSERT INTO cards (user_id, card_name, card_number, card_type, bank_name, branch_name, card_balance, currency_code)
+      `INSERT INTO cards (user_id, card_name, card_number, card_type, bank_name, expiry, card_balance, currency_code)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-      [dto.userId, dto.cardName, dto.cardNumber, dto.cardType, dto.bankName, dto.branchName, dto.cardBalance ?? 0, currencyCode],
+      [dto.userId, dto.cardName, dto.cardNumber, dto.cardType, dto.bankName, dto.expiry ?? null, dto.cardBalance ?? 0, currencyCode],
     );
     return this.mapRow(rows[0]);
   }
@@ -169,7 +169,7 @@ export class CardsService implements OnModuleInit {
            card_number   = COALESCE($2, card_number),
            card_type     = COALESCE($3, card_type),
            bank_name     = COALESCE($4, bank_name),
-           branch_name   = COALESCE($5, branch_name),
+           expiry        = COALESCE($5, expiry),
            card_balance  = COALESCE($6, card_balance),
            currency_code = COALESCE($7, currency_code),
            updated_at    = NOW()
@@ -180,7 +180,7 @@ export class CardsService implements OnModuleInit {
         dto.cardNumber ?? null,
         dto.cardType ?? null,
         dto.bankName ?? null,
-        dto.branchName ?? null,
+        dto.expiry ?? null,
         dto.cardBalance ?? null,
         dto.currencyCode ?? null,
         numId,

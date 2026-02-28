@@ -7,7 +7,8 @@ export interface BalanceCard {
   cardNumber: string;
   cardType: string;
   bankName: string;
-  branchName: string;
+  /** Expiry in MM/YY format (e.g. "12/28"). Optional. */
+  expiry?: string | null;
   cardBalance: number;
   /** Currency code (e.g. BYN, USD). Default BYN if missing. */
   currencyCode?: string;
@@ -23,7 +24,7 @@ export interface CreateCard {
   cardNumber: string;
   cardType: string;
   bankName: string;
-  branchName: string;
+  expiry?: string | null;
   cardBalance?: number;
   currencyCode?: string;
 }

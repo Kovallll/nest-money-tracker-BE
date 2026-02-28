@@ -29,8 +29,8 @@ export class UpdateCardDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(255)
-  branchName?: string;
+  @MaxLength(5)
+  expiry?: string;
 
   @IsOptional()
   @IsNumber()
