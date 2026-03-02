@@ -70,6 +70,7 @@ export class GoalsService implements OnModuleInit {
       if (v instanceof Date) return v.toISOString().split('T')[0];
       return String(v);
     };
+    const endDateVal = row.end_date;
     return {
       id: String(row.id ?? ''),
       userId: (row.user_id as string) ?? undefined,
@@ -79,7 +80,7 @@ export class GoalsService implements OnModuleInit {
       goalBudget: num(row.goal_budget),
       currencyCode: (row.currency_code as string) ?? 'BYN',
       startDate: dateStr(row.start_date),
-      endDate: dateStr(row.end_date),
+      endDate: endDateVal == null ? undefined : dateStr(endDateVal),
       status: (row.status as string) ?? 'active',
       createdAt: (row.created_at as Date)?.toISOString?.() ?? undefined,
       updatedAt: (row.updated_at as Date)?.toISOString?.() ?? undefined,
@@ -137,7 +138,7 @@ export class GoalsService implements OnModuleInit {
           goalBudget,
           currencyCode,
           dto.startDate ?? '',
-          dto.endDate ?? '',
+          dto.endDate && String(dto.endDate).trim() ? dto.endDate : null,
           dto.status ?? 'active',
         ],
       );
@@ -170,6 +171,12 @@ export class GoalsService implements OnModuleInit {
     const existing = await this.getGoalById(id);
     if (!existing) throw new NotFoundException(`Goal with id ${id} not found`);
 
+    const endDateParam =
+      dto.endDate === undefined
+        ? existing.endDate ?? null
+        : dto.endDate && String(dto.endDate).trim()
+          ? dto.endDate
+          : null;
     const { rows } = await this.pool.query(
       `UPDATE goals
        SET user_id        = COALESCE($1, user_id),
@@ -179,7 +186,7 @@ export class GoalsService implements OnModuleInit {
            goal_budget    = COALESCE($5, goal_budget),
            currency_code  = COALESCE($6, currency_code),
            start_date     = COALESCE($7, start_date),
-           end_date       = COALESCE($8, end_date),
+           end_date       = $8,
            status         = COALESCE($9, status),
            updated_at     = NOW()
        WHERE id = $10
@@ -192,7 +199,7 @@ export class GoalsService implements OnModuleInit {
         dto.goalBudget ?? null,
         dto.currencyCode ?? null,
         dto.startDate ?? null,
-        dto.endDate ?? null,
+        endDateParam,
         dto.status ?? null,
         id,
       ],

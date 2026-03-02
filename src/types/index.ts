@@ -29,7 +29,8 @@ export interface GoalItem {
   /** ISO 4217 currency code (e.g. BYN, EUR). Default BYN if missing. */
   currencyCode?: string;
   startDate: string;
-  endDate: string;
+  /** Optional. Goal without end date has no deadline. */
+  endDate?: string;
   status: string;
   createdAt?: string;
   updatedAt?: string;
