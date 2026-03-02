@@ -28,7 +28,7 @@ export class UpdateSubscriptionDto {
 
   @IsOptional()
   @IsNumber()
-  @Min(0)
+  @Min(0.01, { message: 'amount должен быть больше 0' })
   amount?: number;
 
   @IsOptional()

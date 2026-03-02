@@ -25,7 +25,7 @@ export class CreateSubscriptionDto {
   subscribeDate: string;
 
   @IsNumber()
-  @Min(0, { message: 'amount не может быть отрицательным' })
+  @Min(0.01, { message: 'amount должен быть больше 0' })
   amount: number;
 
   @IsOptional()
