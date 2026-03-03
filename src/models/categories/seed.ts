@@ -343,6 +343,22 @@ export const seedCategories = [
   },
   {
     id: uuid4(),
+    name: 'Goals',
+    icon: 'savings',
+    color: '#10B981',
+    examples: [
+      'отпуск',
+      'новый ноутбук',
+      'резервный фонд',
+      'ремонт квартиры',
+      'автомобиль',
+      'образование',
+      'свадьба',
+      'первый взнос на жилье',
+    ],
+  },
+  {
+    id: uuid4(),
     name: 'Other',
     icon: 'category',
     color: '#DDA0DD',
