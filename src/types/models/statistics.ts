@@ -42,7 +42,7 @@ export interface ExpensesOverviewDto {
     monthIndex: number; // 0..11 текущий месяц
     year: number;
     monthsBar: number;
-    topK: number;
+    topK?: number; // при отсутствии показываются все категории
   };
 }
 

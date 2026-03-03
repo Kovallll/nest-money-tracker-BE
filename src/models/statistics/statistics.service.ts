@@ -86,7 +86,7 @@ export class StatisticsService {
     userId?: string;
   }): Promise<ExpensesOverviewDto> {
     const monthsBar = params?.monthsBar ?? 6;
-    const topK = params?.topK ?? 5;
+    const topK = params?.topK; // undefined = все категории
     const locale = params?.locale ?? 'en';
     const userId = params?.userId;
 
@@ -138,7 +138,8 @@ export class StatisticsService {
       const total = series.reduce((s, v) => s + v, 0);
       return { id: catId, title, series, total };
     });
-    const topBar = barSeries.sort((a, b) => b.total - a.total).slice(0, topK);
+    const sortedBar = barSeries.sort((a, b) => b.total - a.total);
+    const topBar = typeof topK === 'number' && topK > 0 ? sortedBar.slice(0, topK) : sortedBar;
     const barDatasets = topBar.map((c, i) => ({
       label: c.title,
       data: c.series,
