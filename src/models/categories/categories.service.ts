@@ -92,13 +92,15 @@ export class CategoriesService implements OnModuleInit {
         c.name as title,
         c.icon,
         c.color,
+        c.created_at,
+        c.updated_at,
         COALESCE(SUM(CASE WHEN t.type = 'expense' THEN t.amount ELSE 0 END), 0) as total_expenses,
         COALESCE(SUM(CASE WHEN t.type = 'revenue' THEN t.amount ELSE 0 END), 0) as total_revenues,
         COUNT(CASE WHEN t.type = 'expense' THEN 1 END) as expense_count,
         COUNT(CASE WHEN t.type = 'revenue' THEN 1 END) as revenue_count
       FROM categories c
       LEFT JOIN transactions t ON t.category_id = c.id
-      GROUP BY c.id, c.name, c.icon, c.color
+      GROUP BY c.id, c.name, c.icon, c.color, c.created_at, c.updated_at
       ORDER BY c.name
     `);
 
@@ -131,6 +133,8 @@ export class CategoriesService implements OnModuleInit {
       title: cat.title,
       icon: cat.icon || 'category',
       color: cat.color,
+      createdAt: cat.created_at?.toISOString?.() ?? cat.created_at ?? undefined,
+      updatedAt: cat.updated_at?.toISOString?.() ?? cat.updated_at ?? undefined,
       totalExpenses: parseFloat(cat.total_expenses),
       totalRevenues: parseFloat(cat.total_revenues),
       expenses: transactionsByCategory[cat.id]?.filter((t) => t.type === Tabs.Expenses) || [],
@@ -145,12 +149,14 @@ export class CategoriesService implements OnModuleInit {
         c.name as title,
         c.icon,
         c.color,
+        c.created_at,
+        c.updated_at,
         COALESCE(SUM(CASE WHEN t.type = 'expense' THEN t.amount ELSE 0 END), 0) as total_expenses,
         COALESCE(SUM(CASE WHEN t.type = 'revenue' THEN t.amount ELSE 0 END), 0) as total_revenues
       FROM categories c
       LEFT JOIN transactions t ON t.category_id = c.id AND t.user_id = $1
       WHERE c.user_id = $1 OR c.user_id IS NULL
-      GROUP BY c.id, c.name, c.icon, c.color
+      GROUP BY c.id, c.name, c.icon, c.color, c.created_at, c.updated_at
       ORDER BY c.name`,
       [userId],
     );
@@ -184,6 +190,8 @@ export class CategoriesService implements OnModuleInit {
       title: cat.title,
       icon: cat.icon || 'category',
       color: cat.color,
+      createdAt: cat.created_at?.toISOString?.() ?? cat.created_at ?? undefined,
+      updatedAt: cat.updated_at?.toISOString?.() ?? cat.updated_at ?? undefined,
       totalExpenses: parseFloat(cat.total_expenses),
       totalRevenues: parseFloat(cat.total_revenues),
       expenses: transactionsByCategory[cat.id]?.filter((t) => t.type === Tabs.Expenses) || [],
@@ -230,9 +238,9 @@ export class CategoriesService implements OnModuleInit {
     }
 
     const { rows } = await this.pool.query(
-      `INSERT INTO categories (id, name, icon, color, user_id) 
-       VALUES ($1, $2, $3, $4, $5) 
-       RETURNING id, name as title, icon, color`,
+      `INSERT INTO categories (id, name, icon, color, user_id, updated_at) 
+       VALUES ($1, $2, $3, $4, $5, NOW()) 
+       RETURNING id, name as title, icon, color, created_at, updated_at`,
       [id, category.name, category.icon || 'category', category.color || '#CCCCCC', userId],
     );
 
@@ -254,6 +262,8 @@ export class CategoriesService implements OnModuleInit {
       title: rows[0].title,
       icon: rows[0].icon,
       color: rows[0].color,
+      createdAt: rows[0].created_at?.toISOString?.() ?? rows[0].created_at ?? undefined,
+      updatedAt: rows[0].updated_at?.toISOString?.() ?? rows[0].updated_at ?? undefined,
       expenses: [],
       revenues: [],
       totalExpenses: 0,
@@ -275,7 +285,7 @@ export class CategoriesService implements OnModuleInit {
          color = COALESCE($3, color),
          updated_at = NOW()
        WHERE id = $4 AND user_id = $5
-       RETURNING id, name as title, icon, color`,
+       RETURNING id, name as title, icon, color, created_at, updated_at`,
       [category.name, category.icon, category.color, id, userId],
     );
 
@@ -297,6 +307,8 @@ export class CategoriesService implements OnModuleInit {
       title: rows[0].title,
       icon: rows[0].icon,
       color: rows[0].color,
+      createdAt: rows[0].created_at?.toISOString?.() ?? rows[0].created_at ?? undefined,
+      updatedAt: rows[0].updated_at?.toISOString?.() ?? rows[0].updated_at ?? undefined,
       expenses: [],
       revenues: [],
       totalExpenses: 0,

@@ -3,6 +3,10 @@ export interface CategoryItem {
   title: string;
   icon: string;
   color?: string;
+  /** ISO date string; when the category was created. */
+  createdAt?: string;
+  /** ISO date string; updated when category is edited or a transaction is added to it. */
+  updatedAt?: string;
   expenses: any[];
   revenues: any[];
   totalExpenses: number;

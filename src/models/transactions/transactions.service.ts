@@ -133,6 +133,12 @@ export class TransactionsService implements OnModuleInit {
         dto.paymentMethod ?? null,
       ],
     );
+    if (dto.categoryId) {
+      await this.pool.query(
+        'UPDATE categories SET updated_at = NOW() WHERE id = $1',
+        [dto.categoryId],
+      );
+    }
     return this.mapRow(rows[0]);
   }
 
@@ -173,6 +179,13 @@ export class TransactionsService implements OnModuleInit {
       ],
     );
 
+    const newCategoryId = dto.categoryId ?? existing.categoryId;
+    if (newCategoryId) {
+      await this.pool.query(
+        'UPDATE categories SET updated_at = NOW() WHERE id = $1',
+        [newCategoryId],
+      );
+    }
     return this.mapRow(rows[0]);
   }
 
