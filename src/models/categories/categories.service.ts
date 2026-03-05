@@ -104,7 +104,6 @@ export class CategoriesService implements OnModuleInit {
       ORDER BY c.name
     `);
 
-    // Получаем транзакции по категориям для детализации
     const { rows: transactions } = await this.pool.query(`
       SELECT t.*, c.name as category_name
       FROM transactions t
@@ -112,7 +111,6 @@ export class CategoriesService implements OnModuleInit {
       ORDER BY t.date DESC
     `);
 
-    // Группируем транзакции по категориям
     const transactionsByCategory: Record<string, any[]> = {};
     for (const t of transactions) {
       if (!transactionsByCategory[t.category_id]) {

@@ -25,9 +25,10 @@ export class TransactionsService implements OnModuleInit {
     }
     const userId: string = userRes.rows[0].id;
 
-    const cardRes = await this.pool.query('SELECT id FROM cards WHERE user_id = $1 LIMIT 1', [
-      userId,
-    ]);
+    const cardRes = await this.pool.query(
+      'SELECT id FROM cards WHERE user_id = $1 ORDER BY is_primary DESC, id ASC LIMIT 1',
+      [userId],
+    );
     if (cardRes.rows.length === 0) {
       this.logger.warn('⚠️ Нет карт у пользователя — seed транзакций пропущен');
       return;

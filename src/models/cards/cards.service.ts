@@ -1,4 +1,4 @@
-import { Injectable, Inject, Logger, OnModuleInit, BadRequestException } from '@nestjs/common';
+import { Injectable, Inject, Logger, OnModuleInit, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { Pool } from 'pg';
 import { PG_POOL } from '@/pg/pg.module';
 import { BalanceCard, CreateCard } from '@/types/models/cards';
@@ -28,12 +28,14 @@ export class CardsService implements OnModuleInit {
 
     this.logger.log('🌱 Создание тестовых карт...');
 
-    for (const c of seedCards) {
+    for (let i = 0; i < seedCards.length; i++) {
+      const c = seedCards[i];
       const currencyCode = (c as { currencyCode?: string }).currencyCode ?? 'BYN';
+      const isPrimary = i === 0;
       await this.pool.query(
-        `INSERT INTO cards (user_id, card_name, card_number, card_type, bank_name, expiry, card_balance, currency_code)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [userId, c.cardName, c.cardNumber, c.cardType, c.bankName, (c as { expiry?: string }).expiry ?? null, c.cardBalance, currencyCode],
+        `INSERT INTO cards (user_id, card_name, card_number, card_type, bank_name, expiry, card_balance, currency_code, is_primary)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [userId, c.cardName, c.cardNumber, c.cardType, c.bankName, (c as { expiry?: string }).expiry ?? null, c.cardBalance, currencyCode, isPrimary],
       );
     }
 
@@ -52,6 +54,7 @@ export class CardsService implements OnModuleInit {
       cardBalance: parseFloat(row.card_balance),
       currencyCode: row.currency_code ?? 'BYN',
       isActive: row.is_active,
+      isPrimary: row.is_primary === true,
       transactions,
       createdAt: row.created_at?.toISOString?.() ?? row.created_at,
       updatedAt: row.updated_at?.toISOString?.() ?? row.updated_at,
@@ -97,9 +100,24 @@ export class CardsService implements OnModuleInit {
     return cards.map((c) => this.mapRow(c, txByCard[c.id] ?? []));
   }
 
+  /** Returns the primary card for the user (used for automatic transactions), or null. */
+  async getPrimaryCardByUserId(userId: string): Promise<BalanceCard | null> {
+    const { rows } = await this.pool.query(
+      'SELECT * FROM cards WHERE user_id = $1 AND is_primary = TRUE LIMIT 1',
+      [userId],
+    );
+    if (rows.length === 0) return null;
+    const card = rows[0];
+    const { rows: txRows } = await this.pool.query(
+      'SELECT * FROM transactions WHERE card_id = $1 ORDER BY date DESC',
+      [card.id],
+    );
+    return this.mapRow(card, txRows.map((r: Record<string, any>) => this.mapTransaction(r)));
+  }
+
   async getCardsByUserId(userId: string): Promise<BalanceCard[]> {
     const { rows: cards } = await this.pool.query(
-      'SELECT * FROM cards WHERE user_id = $1 ORDER BY id',
+      'SELECT * FROM cards WHERE user_id = $1 ORDER BY is_primary DESC, id ASC',
       [userId],
     );
 
@@ -121,7 +139,7 @@ export class CardsService implements OnModuleInit {
     return cards.map((c) => this.mapRow(c, txByCard[c.id] ?? []));
   }
 
-  private parseCardId(id: string): number {
+  parseCardId(id: string): number {
     const num = Number(id);
     if (Number.isNaN(num) || !Number.isInteger(num) || num < 1) {
       throw new BadRequestException(
@@ -149,13 +167,35 @@ export class CardsService implements OnModuleInit {
 
   async addCard(dto: CreateCard): Promise<BalanceCard> {
     const currencyCode = dto.currencyCode ?? 'BYN';
+    const existing = await this.pool.query(
+      'SELECT 1 FROM cards WHERE user_id = $1 LIMIT 1',
+      [dto.userId],
+    );
+    const isFirstCard = existing.rows.length === 0;
     const { rows } = await this.pool.query(
-      `INSERT INTO cards (user_id, card_name, card_number, card_type, bank_name, expiry, card_balance, currency_code)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO cards (user_id, card_name, card_number, card_type, bank_name, expiry, card_balance, currency_code, is_primary)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [dto.userId, dto.cardName, dto.cardNumber, dto.cardType, dto.bankName, dto.expiry ?? null, dto.cardBalance ?? 0, currencyCode],
+      [dto.userId, dto.cardName, dto.cardNumber, dto.cardType, dto.bankName, dto.expiry ?? null, dto.cardBalance ?? 0, currencyCode, isFirstCard],
     );
     return this.mapRow(rows[0]);
+  }
+
+  /** Sets the card as the only primary for the user (for automatic transactions). Fails if card does not belong to user. */
+  async setPrimaryCard(cardId: number, userId: string): Promise<BalanceCard | null> {
+    const card = await this.getCardById(cardId);
+    if (!card || card.userId !== userId) {
+      throw new ForbiddenException('Card not found or access denied');
+    }
+    await this.pool.query(
+      'UPDATE cards SET is_primary = FALSE WHERE user_id = $1',
+      [userId],
+    );
+    await this.pool.query(
+      'UPDATE cards SET is_primary = TRUE, updated_at = NOW() WHERE id = $1 AND user_id = $2',
+      [cardId, userId],
+    );
+    return this.getCardById(cardId);
   }
 
   async updateCard(id: string, dto: Partial<CreateCard>): Promise<BalanceCard | null> {
@@ -192,7 +232,23 @@ export class CardsService implements OnModuleInit {
 
   async deleteCard(id: string): Promise<{ success: boolean }> {
     const numId = this.parseCardId(id);
+    const card = await this.getCardById(numId);
+    if (!card) return { success: false };
+    const wasPrimary = card.isPrimary;
+    const userId = card.userId;
     const result = await this.pool.query('DELETE FROM cards WHERE id = $1', [numId]);
+    if ((result.rowCount ?? 0) > 0 && wasPrimary) {
+      const { rows: remaining } = await this.pool.query(
+        'SELECT id FROM cards WHERE user_id = $1 ORDER BY id ASC LIMIT 1',
+        [userId],
+      );
+      if (remaining.length > 0) {
+        await this.pool.query(
+          'UPDATE cards SET is_primary = TRUE, updated_at = NOW() WHERE id = $1',
+          [remaining[0].id],
+        );
+      }
+    }
     return { success: (result.rowCount ?? 0) > 0 };
   }
 }

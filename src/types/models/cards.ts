@@ -13,6 +13,8 @@ export interface BalanceCard {
   /** Currency code (e.g. BYN, USD). Default BYN if missing. */
   currencyCode?: string;
   isActive: boolean;
+  /** When true, this card is used for automatic transactions (subscriptions, goals, etc.). Only one per user. */
+  isPrimary: boolean;
   transactions: Transaction[];
   createdAt: string;
   updatedAt: string;

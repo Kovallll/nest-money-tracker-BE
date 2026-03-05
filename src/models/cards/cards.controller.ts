@@ -8,6 +8,7 @@ import {
   Delete,
   UseGuards,
   BadRequestException,
+  Req,
 } from '@nestjs/common';
 import { CardsService } from './cards.service';
 import { JwtAuthGuard } from '@/auth/jwt-auth.guard';
@@ -41,6 +42,16 @@ export class CardsController {
   @Post()
   addCard(@Body() dto: CreateCardDto) {
     return this.cardsService.addCard(dto);
+  }
+
+  /** Set this card as the primary one for the current user (used for automatic transactions). */
+  @Patch(':id/set-primary')
+  setPrimaryCard(
+    @Param('id') id: string,
+    @Req() req: { user: { id: string } },
+  ) {
+    const numId = this.cardsService.parseCardId(id);
+    return this.cardsService.setPrimaryCard(numId, req.user.id);
   }
 
   @Patch(':id')
