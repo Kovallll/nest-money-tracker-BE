@@ -2,13 +2,17 @@ import { Injectable, Inject, Logger, OnModuleInit } from '@nestjs/common';
 import { Pool } from 'pg';
 import { PG_POOL } from '@/pg/pg.module';
 import { Transaction, TransactionCreate } from '@/types';
+import { ExchangeRatesService } from '@/common/exchange-rates.service';
 import { seedTransactions } from './seed';
 
 @Injectable()
 export class TransactionsService implements OnModuleInit {
   private readonly logger = new Logger(TransactionsService.name);
 
-  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
+  constructor(
+    @Inject(PG_POOL) private readonly pool: Pool,
+    private readonly exchangeRates: ExchangeRatesService,
+  ) {}
 
   async onModuleInit(): Promise<void> {
     await this.seedIfEmpty();
@@ -90,7 +94,7 @@ export class TransactionsService implements OnModuleInit {
 
   async getTransactions(): Promise<Transaction[]> {
     const { rows } = await this.pool.query(
-      'SELECT * FROM transactions ORDER BY date DESC, id DESC',
+      'SELECT * FROM transactions ORDER BY created_at DESC, id DESC',
     );
     return rows.map((r) => this.mapRow(r));
   }
@@ -103,8 +107,8 @@ export class TransactionsService implements OnModuleInit {
       'SELECT t.*, c.name as category_name FROM transactions t LEFT JOIN categories c ON t.category_id = c.id WHERE t.user_id = $1';
     const query =
       type == null
-        ? `${base} ORDER BY t.date DESC, t.id DESC`
-        : `${base} AND t.type = $2 ORDER BY t.date DESC, t.id DESC`;
+        ? `${base} ORDER BY t.created_at DESC, t.id DESC`
+        : `${base} AND t.type = $2 ORDER BY t.created_at DESC, t.id DESC`;
     const params = type == null ? [userId] : [userId, type];
     const { rows } = await this.pool.query(query, params);
     return rows.map((r) => this.mapRow(r));
@@ -115,16 +119,38 @@ export class TransactionsService implements OnModuleInit {
     return rows.length > 0 ? this.mapRow(rows[0]) : null;
   }
 
-  /** Applies a balance delta to the card (positive = credit, negative = debit). */
-  private async applyCardBalanceDelta(cardId: number, delta: number): Promise<void> {
-    if (delta === 0) return;
+  private async getCardCurrencyCode(cardId: number): Promise<string> {
+    const { rows } = await this.pool.query<{ currency_code: string }>(
+      'SELECT currency_code FROM cards WHERE id = $1',
+      [cardId],
+    );
+    return rows[0]?.currency_code ?? 'BYN';
+  }
+
+  /**
+   * Applies a balance delta to the card. Converts delta from transactionCurrency to card currency.
+   * Positive delta = credit, negative = debit.
+   */
+  private async applyCardBalanceDelta(
+    cardId: number,
+    deltaInTransactionCurrency: number,
+    transactionCurrency: string,
+  ): Promise<void> {
+    if (deltaInTransactionCurrency === 0) return;
+    const cardCurrency = await this.getCardCurrencyCode(cardId);
+    const deltaInCardCurrency = this.exchangeRates.convert(
+      deltaInTransactionCurrency,
+      transactionCurrency,
+      cardCurrency,
+    );
+    if (deltaInCardCurrency === 0) return;
     await this.pool.query(
       'UPDATE cards SET card_balance = card_balance + $1, updated_at = NOW() WHERE id = $2',
-      [delta, cardId],
+      [deltaInCardCurrency, cardId],
     );
   }
 
-  /** Delta to apply to card balance: revenue adds, expense subtracts. */
+  /** Delta to apply to card balance: revenue adds, expense subtracts (in transaction currency). */
   private static balanceDelta(type: 'expense' | 'revenue', amount: number): number {
     return type === 'revenue' ? amount : -amount;
   }
@@ -150,8 +176,9 @@ export class TransactionsService implements OnModuleInit {
     );
     const cardId = dto.cardId ? Number(dto.cardId) : null;
     if (cardId != null && !Number.isNaN(cardId)) {
+      const txCurrency = currencyCode;
       const delta = TransactionsService.balanceDelta(dto.type, dto.amount);
-      await this.applyCardBalanceDelta(cardId, delta);
+      await this.applyCardBalanceDelta(cardId, delta, txCurrency);
     }
     if (dto.categoryId) {
       await this.pool.query(
@@ -204,13 +231,14 @@ export class TransactionsService implements OnModuleInit {
       ],
     );
 
+    const newCurrency = dto.currencyCode ?? existing.currencyCode ?? 'BYN';
     if (oldCardId != null && !Number.isNaN(oldCardId)) {
       const revertDelta = -TransactionsService.balanceDelta(existing.type, existing.amount);
-      await this.applyCardBalanceDelta(oldCardId, revertDelta);
+      await this.applyCardBalanceDelta(oldCardId, revertDelta, existing.currencyCode ?? 'BYN');
     }
     if (newCardId != null && !Number.isNaN(newCardId)) {
       const applyDelta = TransactionsService.balanceDelta(newType, newAmount);
-      await this.applyCardBalanceDelta(newCardId, applyDelta);
+      await this.applyCardBalanceDelta(newCardId, applyDelta, newCurrency);
     }
 
     const newCategoryId = dto.categoryId ?? existing.categoryId;
@@ -233,7 +261,7 @@ export class TransactionsService implements OnModuleInit {
     const result = await this.pool.query('DELETE FROM transactions WHERE id = $1', [id]);
     if ((result.rowCount ?? 0) > 0 && cardId != null && !Number.isNaN(cardId)) {
       const revertDelta = -TransactionsService.balanceDelta(existing.type, existing.amount);
-      await this.applyCardBalanceDelta(cardId, revertDelta);
+      await this.applyCardBalanceDelta(cardId, revertDelta, existing.currencyCode ?? 'BYN');
     }
     return { success: (result.rowCount ?? 0) > 0 };
   }
