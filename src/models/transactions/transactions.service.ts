@@ -115,6 +115,20 @@ export class TransactionsService implements OnModuleInit {
     return rows.length > 0 ? this.mapRow(rows[0]) : null;
   }
 
+  /** Applies a balance delta to the card (positive = credit, negative = debit). */
+  private async applyCardBalanceDelta(cardId: number, delta: number): Promise<void> {
+    if (delta === 0) return;
+    await this.pool.query(
+      'UPDATE cards SET card_balance = card_balance + $1, updated_at = NOW() WHERE id = $2',
+      [delta, cardId],
+    );
+  }
+
+  /** Delta to apply to card balance: revenue adds, expense subtracts. */
+  private static balanceDelta(type: 'expense' | 'revenue', amount: number): number {
+    return type === 'revenue' ? amount : -amount;
+  }
+
   async createTransaction(dto: TransactionCreate): Promise<Transaction> {
     const currencyCode = dto.currencyCode ?? 'BYN';
     const { rows } = await this.pool.query(
@@ -123,7 +137,7 @@ export class TransactionsService implements OnModuleInit {
        RETURNING *`,
       [
         dto.userId,
-        dto.cardId,
+        dto.cardId || null,
         dto.categoryId || null,
         dto.type,
         dto.amount,
@@ -134,6 +148,11 @@ export class TransactionsService implements OnModuleInit {
         dto.paymentMethod ?? null,
       ],
     );
+    const cardId = dto.cardId ? Number(dto.cardId) : null;
+    if (cardId != null && !Number.isNaN(cardId)) {
+      const delta = TransactionsService.balanceDelta(dto.type, dto.amount);
+      await this.applyCardBalanceDelta(cardId, delta);
+    }
     if (dto.categoryId) {
       await this.pool.query(
         'UPDATE categories SET updated_at = NOW() WHERE id = $1',
@@ -149,6 +168,11 @@ export class TransactionsService implements OnModuleInit {
   ): Promise<Transaction | null> {
     const existing = await this.getTransactionById(id);
     if (!existing) return null;
+
+    const oldCardId = existing.cardId ? Number(existing.cardId) : null;
+    const newCardId = dto.cardId !== undefined ? (dto.cardId ? Number(dto.cardId) : null) : oldCardId;
+    const newType = dto.type ?? existing.type;
+    const newAmount = dto.amount ?? existing.amount;
 
     const { rows } = await this.pool.query(
       `UPDATE transactions
@@ -167,7 +191,7 @@ export class TransactionsService implements OnModuleInit {
        RETURNING *`,
       [
         dto.userId ?? null,
-        dto.cardId ?? null,
+        dto.cardId !== undefined ? (dto.cardId || null) : null,
         dto.categoryId || null,
         dto.type ?? null,
         dto.amount ?? null,
@@ -180,6 +204,15 @@ export class TransactionsService implements OnModuleInit {
       ],
     );
 
+    if (oldCardId != null && !Number.isNaN(oldCardId)) {
+      const revertDelta = -TransactionsService.balanceDelta(existing.type, existing.amount);
+      await this.applyCardBalanceDelta(oldCardId, revertDelta);
+    }
+    if (newCardId != null && !Number.isNaN(newCardId)) {
+      const applyDelta = TransactionsService.balanceDelta(newType, newAmount);
+      await this.applyCardBalanceDelta(newCardId, applyDelta);
+    }
+
     const newCategoryId = dto.categoryId ?? existing.categoryId;
     if (newCategoryId) {
       await this.pool.query(
@@ -191,7 +224,17 @@ export class TransactionsService implements OnModuleInit {
   }
 
   async deleteTransaction(id: number): Promise<{ success: boolean }> {
+    const existing = await this.getTransactionById(id);
+    if (!existing) {
+      const result = await this.pool.query('DELETE FROM transactions WHERE id = $1', [id]);
+      return { success: (result.rowCount ?? 0) > 0 };
+    }
+    const cardId = existing.cardId ? Number(existing.cardId) : null;
     const result = await this.pool.query('DELETE FROM transactions WHERE id = $1', [id]);
+    if ((result.rowCount ?? 0) > 0 && cardId != null && !Number.isNaN(cardId)) {
+      const revertDelta = -TransactionsService.balanceDelta(existing.type, existing.amount);
+      await this.applyCardBalanceDelta(cardId, revertDelta);
+    }
     return { success: (result.rowCount ?? 0) > 0 };
   }
 }
