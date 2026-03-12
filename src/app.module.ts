@@ -16,11 +16,17 @@ import { PushModule } from './push/push.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { HealthController } from './health/health.controller';
 import { HealthService } from './health/health.service';
+import { MongooseModule } from '@nestjs/mongoose';
+import { ScheduleModule } from '@nestjs/schedule';
+import { AnalyticsSnapshotsModule } from './models/analytics-snapshots/analytics-snapshots.module';
 
 @Module({
   controllers: [AppController, HealthController],
   providers: [AppService, HealthService],
   imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
+    MongooseModule.forRoot(process.env.MONGODB_URI || 'mongodb://localhost:27017/finance'),
+    ScheduleModule.forRoot(),
     CardsModule,
     TransactionsModule,
     GoalsModule,
@@ -33,7 +39,7 @@ import { HealthService } from './health/health.service';
     AuthModule,
     PushModule,
     TelegramModule,
-    ConfigModule.forRoot({ isGlobal: true }),
+    AnalyticsSnapshotsModule,
   ],
 })
 export class AppModule {}

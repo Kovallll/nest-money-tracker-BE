@@ -23,11 +23,27 @@ export class UsersService {
 
   async getProfile(userId: string) {
     const { rows } = await this.pool.query(
-      `SELECT id, email, name, lastname, phone, avatar, created_at 
+      `SELECT id, email, name, lastname, phone, avatar, created_at,
+              analytics_snapshot_periodicity, analytics_snapshots_enabled
        FROM users WHERE id = $1`,
       [userId],
     );
     return rows[0] || null;
+  }
+
+  async getUsersWithAnalyticsSnapshotsEnabled(): Promise<
+    { id: string; analytics_snapshot_periodicity: string }[]
+  > {
+    const { rows } = await this.pool.query(
+      `SELECT id, COALESCE(analytics_snapshot_periodicity, 'month') AS analytics_snapshot_periodicity
+       FROM users
+       WHERE (analytics_snapshots_enabled IS NULL OR analytics_snapshots_enabled = true)
+         AND is_active = true`,
+    );
+    return rows.map((r: { id: string; analytics_snapshot_periodicity: string }) => ({
+      id: r.id,
+      analytics_snapshot_periodicity: r.analytics_snapshot_periodicity || 'month',
+    }));
   }
 
   async updateProfile(userId: string, data: any) {
@@ -59,6 +75,20 @@ export class UsersService {
       fields.push(`phone = $${idx++}`);
       values.push(data.phone);
     }
+    if (data.analytics_snapshot_periodicity !== undefined) {
+      const p = data.analytics_snapshot_periodicity;
+      if (!['week', 'month', 'quarter'].includes(p)) {
+        throw new BadRequestException(
+          'analytics_snapshot_periodicity must be one of: week, month, quarter',
+        );
+      }
+      fields.push(`analytics_snapshot_periodicity = $${idx++}`);
+      values.push(p);
+    }
+    if (data.analytics_snapshots_enabled !== undefined) {
+      fields.push(`analytics_snapshots_enabled = $${idx++}`);
+      values.push(Boolean(data.analytics_snapshots_enabled));
+    }
 
     if (fields.length === 0) {
       throw new BadRequestException(
@@ -70,7 +100,8 @@ export class UsersService {
 
     const { rows } = await this.pool.query(
       `UPDATE users SET ${fields.join(', ')}, updated_at = NOW() 
-       WHERE id = $${idx} RETURNING id, email, name, lastname, phone, avatar`,
+       WHERE id = $${idx} RETURNING id, email, name, lastname, phone, avatar,
+               analytics_snapshot_periodicity, analytics_snapshots_enabled`,
       values,
     );
 

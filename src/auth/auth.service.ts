@@ -53,7 +53,8 @@ export class AuthService {
   async login(email: string, password: string, pushSubscription?: any, userAgent?: string) {
     // Поиск пользователя
     const { rows } = await this.pool.query(
-      'SELECT id, email, name, lastname, phone, avatar, password_hash FROM users WHERE email = $1',
+      `SELECT id, email, name, lastname, phone, avatar, password_hash,
+              analytics_snapshot_periodicity, analytics_snapshots_enabled FROM users WHERE email = $1`,
       [email],
     );
 
@@ -83,6 +84,8 @@ export class AuthService {
         lastname: user.lastname ?? '',
         phone: user.phone ?? '',
         avatar: user.avatar ?? null,
+        analytics_snapshot_periodicity: user.analytics_snapshot_periodicity ?? 'month',
+        analytics_snapshots_enabled: user.analytics_snapshots_enabled ?? true,
       },
       ...tokens,
     };
@@ -96,7 +99,8 @@ export class AuthService {
 
     // Проверка refresh token в БД (не перезаписываем его при refresh — избегаем гонки при двух вкладках/окнах)
     const { rows } = await this.pool.query(
-      `SELECT id, email, name, lastname, phone, avatar FROM users 
+      `SELECT id, email, name, lastname, phone, avatar,
+              analytics_snapshot_periodicity, analytics_snapshots_enabled FROM users 
        WHERE refresh_token = $1 AND token_expires > NOW()`,
       [refreshToken],
     );
@@ -117,6 +121,8 @@ export class AuthService {
         lastname: user.lastname ?? '',
         phone: user.phone ?? '',
         avatar: user.avatar ?? null,
+        analytics_snapshot_periodicity: user.analytics_snapshot_periodicity ?? 'month',
+        analytics_snapshots_enabled: user.analytics_snapshots_enabled ?? true,
       },
       accessToken,
       refreshToken,

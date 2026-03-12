@@ -1,6 +1,7 @@
 import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
+import { retry, throwError, timer } from 'rxjs';
 import { AxiosError } from 'axios';
 
 export interface PredictionResult {
@@ -28,18 +29,39 @@ interface PredictResponse {
   is_training?: boolean;
 }
 
+/** Кэш предсказаний по нормализованному тексту, чтобы не дергать ML при лимитах (429). */
+const PREDICT_CACHE_TTL_MS = 2 * 60 * 1000; // 2 минуты
+const PREDICT_CACHE_MAX_SIZE = 500;
+
+interface CacheEntry {
+  prediction: Prediction;
+  expiresAt: number;
+}
+
 @Injectable()
 export class CategorizerService {
   private readonly logger = new Logger(CategorizerService.name);
   private readonly baseUrl: string;
+  private readonly predictCache = new Map<string, CacheEntry>();
 
   constructor(private readonly httpService: HttpService) {
     this.baseUrl = process.env.ML_SERVICE_URL || 'http://localhost:8080';
     this.logger.log(`HTTP ML сервис: ${this.baseUrl}`);
   }
 
+  private normalizeText(text: string): string {
+    return (text ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
   private handleError(error: AxiosError, context: string): never {
     this.logger.error(`${context}: ${error.message}`);
+
+    if (error.response?.status === 429) {
+      throw new HttpException(
+        'Слишком много запросов к сервису категоризации. Повторите через несколько секунд.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
 
     if (error.response?.status === 503) {
       throw new HttpException('Модель обучается, подождите', HttpStatus.SERVICE_UNAVAILABLE);
@@ -57,10 +79,32 @@ export class CategorizerService {
   }
 
   async predict(text: string): Promise<Prediction> {
+    const key = this.normalizeText(text);
+    if (!key) {
+      throw new HttpException('Пустой текст для предсказания', HttpStatus.BAD_REQUEST);
+    }
+
+    const now = Date.now();
+    const cached = this.predictCache.get(key);
+    if (cached && cached.expiresAt > now) {
+      return cached.prediction;
+    }
+
     try {
-      const { data } = await firstValueFrom(
-        this.httpService.post<PredictResponse>(`${this.baseUrl}/predict`, { text }),
+      const source$ = this.httpService.post<PredictResponse>(`${this.baseUrl}/predict`, { text }).pipe(
+        retry({
+          count: 2,
+          delay: (err: AxiosError) => {
+            if (err?.response?.status === 429) {
+              this.logger.warn('ML 429, повтор через 3с...');
+              return timer(3000);
+            }
+            return throwError(() => err);
+          },
+        }),
       );
+
+      const { data } = await firstValueFrom(source$);
 
       if (!data.success) {
         throw new HttpException(data.error || 'Ошибка предсказания', HttpStatus.BAD_REQUEST);
@@ -70,12 +114,20 @@ export class CategorizerService {
         throw new HttpException('Нет результата предсказания', HttpStatus.INTERNAL_SERVER_ERROR);
       }
 
-      return {
+      const prediction: Prediction = {
         primary: data.primary,
         alternatives: data.alternatives || [],
         needs_confirmation: data.needs_confirmation ?? true,
         source: data.source || 'fasttext',
       };
+
+      if (this.predictCache.size >= PREDICT_CACHE_MAX_SIZE) {
+        const firstKey = this.predictCache.keys().next().value;
+        if (firstKey) this.predictCache.delete(firstKey);
+      }
+      this.predictCache.set(key, { prediction, expiresAt: now + PREDICT_CACHE_TTL_MS });
+
+      return prediction;
     } catch (error) {
       if (error instanceof HttpException) throw error;
       this.handleError(error as AxiosError, 'Ошибка предсказания');

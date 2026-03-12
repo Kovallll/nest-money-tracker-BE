@@ -1,4 +1,4 @@
-import { IsString, IsOptional, MaxLength, IsEmail } from 'class-validator';
+import { IsString, IsOptional, MaxLength, IsEmail, IsIn, IsBoolean } from 'class-validator';
 
 export class UpdateProfileDto {
   @IsOptional()
@@ -19,4 +19,15 @@ export class UpdateProfileDto {
   @IsString()
   @MaxLength(50)
   phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['week', 'month', 'quarter'], {
+    message: 'analytics_snapshot_periodicity must be one of: week, month, quarter',
+  })
+  analytics_snapshot_periodicity?: 'week' | 'month' | 'quarter';
+
+  @IsOptional()
+  @IsBoolean()
+  analytics_snapshots_enabled?: boolean;
 }
