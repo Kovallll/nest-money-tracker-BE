@@ -73,10 +73,10 @@ export class CategoriesService implements OnModuleInit {
         // Добавляем примеры
         if (cat.examples) {
           for (const example of cat.examples) {
-            await this.pool.query(`INSERT INTO examples (category_id, text) VALUES ($1, $2)`, [
-              cat.id,
-              example,
-            ]);
+            await this.pool.query(
+              `INSERT INTO examples (category_id, text, user_id) VALUES ($1, $2, NULL)`,
+              [cat.id, example],
+            );
           }
         }
 
@@ -245,10 +245,10 @@ export class CategoriesService implements OnModuleInit {
     // Добавляем примеры
     if (category.examples && category.examples.length > 0) {
       for (const example of category.examples) {
-        await this.pool.query(`INSERT INTO examples (category_id, text) VALUES ($1, $2)`, [
-          id,
-          example,
-        ]);
+        await this.pool.query(
+          `INSERT INTO examples (category_id, text, user_id) VALUES ($1, $2, $3)`,
+          [id, example, userId],
+        );
       }
     }
 
@@ -389,8 +389,9 @@ export class CategoriesService implements OnModuleInit {
     }
 
     await this.pool.query(
-      `INSERT INTO examples (category_id, text) VALUES ($1, $2)
-       ON CONFLICT DO NOTHING`,
+      `INSERT INTO examples (category_id, text, user_id)
+       SELECT $1::uuid, $2, c.user_id FROM categories c WHERE c.id = $1::uuid
+       ON CONFLICT (category_id, text) DO NOTHING`,
       [categoryId, example],
     );
 

@@ -18,5 +18,8 @@ export type Transaction = {
   updatedAt?: string;
 };
 
-export type TransactionCreate = Omit<Transaction, 'id' | 'createdAt' | 'updatedAt'>;
+export type TransactionCreate = Omit<Transaction, 'id' | 'createdAt' | 'updatedAt'> & {
+  predictionKey?: string;
+  predictedCategoryId?: string | null;
+};
 

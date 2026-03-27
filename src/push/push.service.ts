@@ -1,18 +1,26 @@
 // api/src/push/push.service.ts
 import { PG_POOL } from '@/pg/pg.module';
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable, Inject, Logger } from '@nestjs/common';
 import { Pool } from 'pg';
 
 import * as webPush from 'web-push';
 
 @Injectable()
 export class PushService {
+  private readonly logger = new Logger(PushService.name);
+  private readonly pushConfigured: boolean;
+
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {
-    webPush.setVapidDetails(
-      'mailto:admin@financeapp.com',
-      process.env.VAPID_PUBLIC_KEY!,
-      process.env.VAPID_PRIVATE_KEY!,
-    );
+    const publicKey = process.env.VAPID_PUBLIC_KEY?.trim();
+    const privateKey = process.env.VAPID_PRIVATE_KEY?.trim();
+    this.pushConfigured = Boolean(publicKey && privateKey);
+
+    if (!this.pushConfigured) {
+      this.logger.warn('VAPID keys are not set; web push is disabled.');
+      return;
+    }
+
+    webPush.setVapidDetails('mailto:admin@financeapp.com', publicKey!, privateKey!);
   }
 
   getVapidPublicKey(): { publicKey: string } {
@@ -58,6 +66,10 @@ export class PushService {
   }
 
   async sendToUser(userId: string, payload: { title: string; body: string; url?: string }) {
+    if (!this.pushConfigured) {
+      return { sent: false, reason: 'Push service is not configured' };
+    }
+
     const { rows } = await this.pool.query(
       'SELECT push_subscription, push_enabled FROM users WHERE id = $1',
       [userId],

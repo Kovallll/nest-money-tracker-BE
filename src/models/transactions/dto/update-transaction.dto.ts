@@ -52,4 +52,12 @@ export class UpdateTransactionDto {
   @IsString()
   @IsIn(['cash', 'card'])
   paymentMethod?: 'cash' | 'card';
+
+  @IsOptional()
+  @IsString()
+  predictionKey?: string;
+
+  @IsOptional()
+  @IsString()
+  predictedCategoryId?: string;
 }

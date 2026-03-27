@@ -3,7 +3,13 @@ import { Pool } from 'pg';
 import { PG_POOL } from '@/pg/pg.module';
 import { Transaction, TransactionCreate } from '@/types';
 import { ExchangeRatesService } from '@/common/exchange-rates.service';
+import { PredictionFeedbackService } from '@/categorizer/prediction-feedback.service';
 import { seedTransactions } from './seed';
+
+interface CreateTransactionDto extends TransactionCreate {
+  predictionKey?: string;
+  predictedCategoryId?: string;
+}
 
 @Injectable()
 export class TransactionsService implements OnModuleInit {
@@ -12,6 +18,7 @@ export class TransactionsService implements OnModuleInit {
   constructor(
     @Inject(PG_POOL) private readonly pool: Pool,
     private readonly exchangeRates: ExchangeRatesService,
+    private readonly predictionFeedback: PredictionFeedbackService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -155,7 +162,7 @@ export class TransactionsService implements OnModuleInit {
     return type === 'revenue' ? amount : -amount;
   }
 
-  async createTransaction(dto: TransactionCreate): Promise<Transaction> {
+  async createTransaction(dto: CreateTransactionDto): Promise<Transaction> {
     const currencyCode = dto.currencyCode ?? 'BYN';
     const { rows } = await this.pool.query(
       `INSERT INTO transactions (user_id, card_id, category_id, type, amount, currency_code, title, description, date, payment_method)
@@ -185,6 +192,11 @@ export class TransactionsService implements OnModuleInit {
         'UPDATE categories SET updated_at = NOW() WHERE id = $1',
         [dto.categoryId],
       );
+    }
+    if (dto.predictionKey && dto.predictedCategoryId != null) {
+      await this.predictionFeedback
+        .recordFeedback(dto.predictionKey, dto.predictedCategoryId, dto.categoryId ?? null)
+        .catch((err) => this.logger.warn('Prediction feedback failed:', (err as Error).message));
     }
     return this.mapRow(rows[0]);
   }
@@ -247,6 +259,11 @@ export class TransactionsService implements OnModuleInit {
         'UPDATE categories SET updated_at = NOW() WHERE id = $1',
         [newCategoryId],
       );
+    }
+    if (dto.predictionKey && dto.predictedCategoryId != null) {
+      await this.predictionFeedback
+        .recordFeedback(dto.predictionKey, dto.predictedCategoryId, newCategoryId ?? null)
+        .catch((err) => this.logger.warn('Prediction feedback failed:', (err as Error).message));
     }
     return this.mapRow(rows[0]);
   }

@@ -4,6 +4,7 @@ import { ExchangeRatesController } from '@/common/exchange-rates.controller';
 import { ExchangeRatesService } from '@/common/exchange-rates.service';
 import { TransactionsService } from './transactions.service';
 import { TransactionsController } from './transactions.controller';
+import { CategorizerModule } from '@/categorizer/categorizer.module';
 
 @Module({
   imports: [
@@ -11,6 +12,7 @@ import { TransactionsController } from './transactions.controller';
       timeout: 10000,
       maxRedirects: 5,
     }),
+    CategorizerModule,
   ],
   providers: [TransactionsService, ExchangeRatesService],
   controllers: [TransactionsController, ExchangeRatesController],

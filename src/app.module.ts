@@ -19,12 +19,15 @@ import { HealthService } from './health/health.service';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AnalyticsSnapshotsModule } from './models/analytics-snapshots/analytics-snapshots.module';
+import { RedisModule } from './redis/redis.module';
+import { ReceiptOcrModule } from './receipt-ocr/receipt-ocr.module';
 
 @Module({
   controllers: [AppController, HealthController],
   providers: [AppService, HealthService],
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    RedisModule,
     MongooseModule.forRoot(process.env.MONGODB_URI || 'mongodb://localhost:27017/finance'),
     ScheduleModule.forRoot(),
     CardsModule,
@@ -40,6 +43,7 @@ import { AnalyticsSnapshotsModule } from './models/analytics-snapshots/analytics
     PushModule,
     TelegramModule,
     AnalyticsSnapshotsModule,
+    ReceiptOcrModule,
   ],
 })
 export class AppModule {}

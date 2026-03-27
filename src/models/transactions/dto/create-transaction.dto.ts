@@ -46,5 +46,15 @@ export class CreateTransactionDto {
   @IsString()
   @IsIn(['cash', 'card'])
   paymentMethod?: 'cash' | 'card';
+
+  /** Redis cache key from categorizer/predict (for feedback: was prediction accepted). */
+  @IsOptional()
+  @IsString()
+  predictionKey?: string;
+
+  /** Category id that was predicted (primary or chosen alternative). */
+  @IsOptional()
+  @IsString()
+  predictedCategoryId?: string;
 }
 

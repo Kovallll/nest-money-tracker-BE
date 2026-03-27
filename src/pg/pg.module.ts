@@ -14,6 +14,12 @@ export const PG_POOL = 'PG_POOL';
         }
 
         const dbUrl = new URL(process.env.DATABASE_URL);
+        const sslMode = (dbUrl.searchParams.get('sslmode') || '').toLowerCase();
+        const useSsl =
+          process.env.DATABASE_SSL === 'false'
+            ? false
+            : process.env.DATABASE_SSL === 'true' ||
+              ['require', 'verify-full', 'verify-ca'].includes(sslMode);
 
         const pool = new Pool({
           host: dbUrl.hostname,
@@ -22,9 +28,7 @@ export const PG_POOL = 'PG_POOL';
           password: dbUrl.password,
           database: dbUrl.pathname.replace('/', ''),
           max: 10,
-          ssl: {
-            rejectUnauthorized: false,
-          },
+          ...(useSsl ? { ssl: { rejectUnauthorized: false } } : {}),
         });
 
         await pool.query('SELECT 1');
