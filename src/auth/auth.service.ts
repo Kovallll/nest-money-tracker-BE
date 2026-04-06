@@ -6,6 +6,7 @@ import { Pool } from 'pg';
 import { PG_POOL } from '../pg/pg.module';
 import * as bcrypt from 'bcrypt';
 import { PushService } from '@/push/push.service';
+import { CategoriesService } from '@/models/categories/categories.service';
 import { v4 as uuid4 } from 'uuid';
 
 @Injectable()
@@ -14,6 +15,7 @@ export class AuthService {
     @Inject(PG_POOL) private readonly pool: Pool,
     private readonly jwtService: JwtService,
     private readonly pushService: PushService,
+    private readonly categoriesService: CategoriesService,
   ) {}
 
   async register(
@@ -41,6 +43,8 @@ export class AuthService {
        VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
       [userId, email, name, lastnameVal, phoneVal, passwordHash],
     );
+
+    await this.categoriesService.ensureDefaultPersonalCategories(userId);
 
     const tokens = await this.generateTokens(userId, email);
 

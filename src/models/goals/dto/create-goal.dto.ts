@@ -5,6 +5,11 @@ export class CreateGoalDto {
   @IsString()
   userId?: string;
 
+  /** Если задан — цель комнаты; userId не передаётся. */
+  @IsOptional()
+  @IsString()
+  groupRoomId?: string;
+
   @IsOptional()
   @IsString()
   categoryId?: string;

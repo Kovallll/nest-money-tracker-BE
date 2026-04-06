@@ -22,6 +22,8 @@ export interface ExpenseItem {
 export interface GoalItem {
   id: string;
   userId?: string;
+  /** Комнатная цель: задан id комнаты, userId отсутствует. */
+  groupRoomId?: string | null;
   categoryId?: string | null;
   title: string;
   targetBudget: number;
@@ -39,6 +41,8 @@ export interface GoalItem {
 export interface SubscribeItem {
   id: string;
   userId?: string;
+  /** Комнатная подписка. */
+  groupRoomId?: string | null;
   categoryId?: string | null;
   subscribeName: string;
   subscribeDate: string;

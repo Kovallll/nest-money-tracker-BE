@@ -34,12 +34,14 @@ export class StatisticsService {
     top?: number;
     locale?: string;
     userId?: string;
+    roomId?: string;
   }): Promise<CategoryLineChartDto[]> {
     const year = params?.year ?? new Date().getFullYear();
     const locale = params?.locale ?? 'en';
     const limitToCurrent = params?.monthsLimitToCurrent ?? true;
     const top = params?.top;
     const userId = params?.userId;
+    const roomId = params?.roomId;
 
     const now = new Date();
     const lastMonthIndex = limitToCurrent && year === now.getFullYear() ? now.getMonth() : 11;
@@ -48,8 +50,8 @@ export class StatisticsService {
       new Date(year, m, 1).toLocaleString(locale, { month: 'short' }),
     );
 
-    const transactions = await this.fetchExpenseTransactions(year, lastMonthIndex, userId);
-    const categories = await this.fetchCategoriesMap(userId);
+    const transactions = await this.fetchExpenseTransactions(year, lastMonthIndex, userId, roomId);
+    const categories = await this.fetchCategoriesMap(userId, roomId);
 
     const byCategory = this.groupExpensesByCategoryAndMonth(transactions, year, lastMonthIndex);
 
@@ -84,11 +86,13 @@ export class StatisticsService {
     topK?: number;
     locale?: string;
     userId?: string;
+    roomId?: string;
   }): Promise<ExpensesOverviewDto> {
     const monthsBar = params?.monthsBar ?? 6;
     const topK = params?.topK; // undefined = все категории
     const locale = params?.locale ?? 'en';
     const userId = params?.userId;
+    const roomId = params?.roomId;
 
     const now = new Date();
     const year = now.getFullYear();
@@ -100,8 +104,8 @@ export class StatisticsService {
     const lineMonths = this.buildLastMonths(12, now);
     const lineLabels = lineMonths.map((d) => d.toLocaleString(locale, { month: 'short' }));
 
-    const categories = await this.fetchCategoriesMap(userId);
-    const transactions = await this.fetchExpenseTransactionsForOverview(now, userId);
+    const categories = await this.fetchCategoriesMap(userId, roomId);
+    const transactions = await this.fetchExpenseTransactionsForOverview(now, userId, roomId);
 
     const byCategoryAndMonth = new Map<string, Map<number, number>>();
     for (const t of transactions) {
@@ -184,9 +188,22 @@ export class StatisticsService {
     year: number,
     lastMonthIndex: number,
     userId?: string,
+    roomId?: string,
   ): Promise<TxRow[]> {
     const start = new Date(year, 0, 1);
     const end = new Date(year, lastMonthIndex + 1, 0);
+    if (roomId) {
+      const { rows } = await this.pool.query(
+        `SELECT category_id, date, amount::text AS amount FROM group_transactions
+         WHERE room_id = $1 AND date >= $2 AND date <= $3`,
+        [roomId, start, end],
+      );
+      return rows.map((r) => ({
+        category_id: r.category_id,
+        date: r.date instanceof Date ? r.date : new Date(r.date),
+        amount: r.amount,
+      }));
+    }
     const sql = userId
       ? `SELECT category_id, date, amount FROM transactions
          WHERE type = 'expense' AND user_id = $1 AND date >= $2 AND date <= $3`
@@ -201,9 +218,25 @@ export class StatisticsService {
     }));
   }
 
-  private async fetchExpenseTransactionsForOverview(ref: Date, userId?: string): Promise<TxRow[]> {
+  private async fetchExpenseTransactionsForOverview(
+    ref: Date,
+    userId?: string,
+    roomId?: string,
+  ): Promise<TxRow[]> {
     const start = new Date(ref.getFullYear(), ref.getMonth() - 11, 1);
     const end = new Date(ref.getFullYear(), ref.getMonth() + 1, 0);
+    if (roomId) {
+      const { rows } = await this.pool.query(
+        `SELECT category_id, date, amount::text AS amount FROM group_transactions
+         WHERE room_id = $1 AND date >= $2 AND date <= $3`,
+        [roomId, start, end],
+      );
+      return rows.map((r) => ({
+        category_id: r.category_id,
+        date: r.date instanceof Date ? r.date : new Date(r.date),
+        amount: r.amount,
+      }));
+    }
     const sql = userId
       ? `SELECT category_id, date, amount FROM transactions
          WHERE type = 'expense' AND user_id = $1 AND date >= $2 AND date <= $3`
@@ -218,12 +251,23 @@ export class StatisticsService {
     }));
   }
 
-  private async fetchCategoriesMap(userId?: string): Promise<Map<string, string>> {
-    const sql = userId
-      ? 'SELECT id, name FROM categories WHERE user_id = $1 OR user_id IS NULL'
-      : 'SELECT id, name FROM categories';
-    const params = userId ? [userId] : [];
-    const { rows } = await this.pool.query(sql, params);
+  private async fetchCategoriesMap(userId?: string, roomId?: string): Promise<Map<string, string>> {
+    let rows: { id: string; name: string }[];
+    if (roomId) {
+      const res = await this.pool.query(
+        `SELECT id, name FROM categories
+         WHERE group_room_id = $1 OR (user_id IS NULL AND group_room_id IS NULL)`,
+        [roomId],
+      );
+      rows = res.rows;
+    } else {
+      const sql = userId
+        ? 'SELECT id, name FROM categories WHERE user_id = $1 OR user_id IS NULL'
+        : 'SELECT id, name FROM categories';
+      const params = userId ? [userId] : [];
+      const res = await this.pool.query(sql, params);
+      rows = res.rows;
+    }
     const map = new Map<string, string>();
     for (const r of rows) {
       map.set(r.id, r.name);

@@ -10,10 +10,6 @@ import {
 export class UpdateGoalDto {
   @IsOptional()
   @IsString()
-  userId?: string;
-
-  @IsOptional()
-  @IsString()
   categoryId?: string;
 
   @IsOptional()

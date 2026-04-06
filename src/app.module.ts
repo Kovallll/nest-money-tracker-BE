@@ -21,12 +21,15 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { AnalyticsSnapshotsModule } from './models/analytics-snapshots/analytics-snapshots.module';
 import { RedisModule } from './redis/redis.module';
 import { ReceiptOcrModule } from './receipt-ocr/receipt-ocr.module';
+import { GroupRoomsModule } from './group-rooms/group-rooms.module';
+import { CommonModule } from './common/common.module';
 
 @Module({
   controllers: [AppController, HealthController],
   providers: [AppService, HealthService],
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    CommonModule,
     RedisModule,
     MongooseModule.forRoot(process.env.MONGODB_URI || 'mongodb://localhost:27017/finance'),
     ScheduleModule.forRoot(),
@@ -44,6 +47,7 @@ import { ReceiptOcrModule } from './receipt-ocr/receipt-ocr.module';
     TelegramModule,
     AnalyticsSnapshotsModule,
     ReceiptOcrModule,
+    GroupRoomsModule,
   ],
 })
 export class AppModule {}

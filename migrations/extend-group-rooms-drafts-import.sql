@@ -56,31 +56,11 @@ ALTER TABLE categories
 -- Импорт и черновики
 -- ---------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS import_sessions (
-    id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    source          VARCHAR(20)  NOT NULL
-                        CHECK (source IN ('csv', 'xlsx', 'pdf', 'ofx', 'other')),
-    filename        VARCHAR(255),
-    status          VARCHAR(30)  NOT NULL DEFAULT 'pending'
-                        CHECK (status IN (
-                            'pending', 'processing',
-                            'awaiting_confirmation', 'completed', 'failed'
-                        )),
-    total_rows      INTEGER      DEFAULT 0,
-    imported_rows   INTEGER      DEFAULT 0,
-    failed_rows     INTEGER      DEFAULT 0,
-    error_message   TEXT,
-    created_at      TIMESTAMPTZ  DEFAULT NOW(),
-    completed_at    TIMESTAMPTZ
-);
-
 CREATE TABLE IF NOT EXISTS transaction_drafts (
     id                UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id           UUID            NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     source            VARCHAR(20)     NOT NULL
                           CHECK (source IN ('telegram', 'ocr', 'import')),
-    import_session_id UUID            REFERENCES import_sessions(id) ON DELETE SET NULL,
     card_id           INTEGER         REFERENCES cards(id) ON DELETE SET NULL,
     category_id       UUID            REFERENCES categories(id) ON DELETE SET NULL,
     type              VARCHAR(20)     CHECK (type IN ('expense', 'revenue', 'transfer')),
@@ -212,12 +192,9 @@ CREATE TABLE IF NOT EXISTS group_activity_log (
 -- Индексы
 -- ---------------------------------------------------------------------------
 
-CREATE INDEX IF NOT EXISTS idx_import_sessions_user_id ON import_sessions(user_id);
-
 CREATE INDEX IF NOT EXISTS idx_transaction_drafts_user_id ON transaction_drafts(user_id);
 CREATE INDEX IF NOT EXISTS idx_transaction_drafts_status ON transaction_drafts(status);
 CREATE INDEX IF NOT EXISTS idx_transaction_drafts_source ON transaction_drafts(source);
-CREATE INDEX IF NOT EXISTS idx_transaction_drafts_import_session ON transaction_drafts(import_session_id);
 
 CREATE INDEX IF NOT EXISTS idx_categories_group_room_id ON categories(group_room_id);
 

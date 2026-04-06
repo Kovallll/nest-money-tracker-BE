@@ -1,6 +1,9 @@
 // seed-categories.ts
 import { v4 as uuid4 } from 'uuid';
 
+/** Глобальные шаблоны (user_id IS NULL), которые видит пользователь в личном кабинете до добавления своих категорий. */
+export const DEFAULT_USER_VISIBLE_BASE_CATEGORY_NAMES = ['Subscriptions', 'Goals'] as const;
+
 export const seedCategories = [
   {
     id: uuid4(),

@@ -11,10 +11,6 @@ import {
 export class UpdateSubscriptionDto {
   @IsOptional()
   @IsString()
-  userId?: string;
-
-  @IsOptional()
-  @IsString()
   categoryId?: string;
 
   @IsOptional()

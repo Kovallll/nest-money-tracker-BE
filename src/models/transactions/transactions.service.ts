@@ -1,4 +1,4 @@
-import { Injectable, Inject, Logger, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, Injectable, Inject, Logger, OnModuleInit } from '@nestjs/common';
 import { Pool } from 'pg';
 import { PG_POOL } from '@/pg/pg.module';
 import { Transaction, TransactionCreate } from '@/types';
@@ -7,6 +7,11 @@ import { PredictionFeedbackService } from '@/categorizer/prediction-feedback.ser
 import { seedTransactions } from './seed';
 
 interface CreateTransactionDto extends TransactionCreate {
+  predictionKey?: string;
+  predictedCategoryId?: string;
+}
+
+interface UpdateTransactionDto extends Partial<TransactionCreate> {
   predictionKey?: string;
   predictedCategoryId?: string;
 }
@@ -162,6 +167,47 @@ export class TransactionsService implements OnModuleInit {
     return type === 'revenue' ? amount : -amount;
   }
 
+  /**
+   * Проверка, что карта принадлежит пользователю (личные карты из «личного» аккаунта).
+   */
+  async assertPersonalCardBelongsToUser(cardId: number, userId: string): Promise<void> {
+    const { rowCount } = await this.pool.query(
+      'SELECT 1 FROM cards WHERE id = $1 AND user_id = $2',
+      [cardId, userId],
+    );
+    if (!rowCount) {
+      throw new BadRequestException('Карта не найдена или не принадлежит плательщику');
+    }
+  }
+
+  /**
+   * Групповой расход, оплаченный с личной карты участника: уменьшить баланс карты (как expense).
+   */
+  async applyPersonalCardForGroupExpense(
+    payerUserId: string,
+    cardId: number,
+    amount: number,
+    currencyCode: string,
+  ): Promise<void> {
+    await this.assertPersonalCardBelongsToUser(cardId, payerUserId);
+    const delta = TransactionsService.balanceDelta('expense', amount);
+    await this.applyCardBalanceDelta(cardId, delta, currencyCode);
+  }
+
+  /**
+   * Откат эффекта {@link applyPersonalCardForGroupExpense} (например, при удалении групповой транзакции).
+   */
+  async reversePersonalCardForGroupExpense(
+    payerUserId: string,
+    cardId: number,
+    amount: number,
+    currencyCode: string,
+  ): Promise<void> {
+    await this.assertPersonalCardBelongsToUser(cardId, payerUserId);
+    const delta = TransactionsService.balanceDelta('revenue', amount);
+    await this.applyCardBalanceDelta(cardId, delta, currencyCode);
+  }
+
   async createTransaction(dto: CreateTransactionDto): Promise<Transaction> {
     const currencyCode = dto.currencyCode ?? 'BYN';
     const { rows } = await this.pool.query(
@@ -195,7 +241,9 @@ export class TransactionsService implements OnModuleInit {
     }
     if (dto.predictionKey && dto.predictedCategoryId != null) {
       await this.predictionFeedback
-        .recordFeedback(dto.predictionKey, dto.predictedCategoryId, dto.categoryId ?? null)
+        .recordFeedback(dto.predictionKey, dto.predictedCategoryId, dto.categoryId ?? null, {
+          userId: dto.userId,
+        })
         .catch((err) => this.logger.warn('Prediction feedback failed:', (err as Error).message));
     }
     return this.mapRow(rows[0]);
@@ -203,7 +251,7 @@ export class TransactionsService implements OnModuleInit {
 
   async updateTransaction(
     id: number,
-    dto: Partial<TransactionCreate>,
+    dto: UpdateTransactionDto,
   ): Promise<Transaction | null> {
     const existing = await this.getTransactionById(id);
     if (!existing) return null;
@@ -262,7 +310,9 @@ export class TransactionsService implements OnModuleInit {
     }
     if (dto.predictionKey && dto.predictedCategoryId != null) {
       await this.predictionFeedback
-        .recordFeedback(dto.predictionKey, dto.predictedCategoryId, newCategoryId ?? null)
+        .recordFeedback(dto.predictionKey, dto.predictedCategoryId, newCategoryId ?? null, {
+          userId: dto.userId ?? existing.userId,
+        })
         .catch((err) => this.logger.warn('Prediction feedback failed:', (err as Error).message));
     }
     return this.mapRow(rows[0]);

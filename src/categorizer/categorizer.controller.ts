@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { CategorizerService, PredictionResponse } from './categorizer.service';
 import { JwtAuthGuard } from '@/auth/jwt-auth.guard';
 import { PredictCategoryDto, RetrainDto } from './dto';
@@ -13,8 +13,14 @@ export class CategorizerController {
   ) {}
 
   @Post('predict')
-  predictCategory(@Body() body: PredictCategoryDto): Promise<PredictionResponse> {
-    return this.categorizerService.predict(body.text);
+  predictCategory(
+    @Body() body: PredictCategoryDto,
+    @Req() req: { user?: { id?: string } },
+  ): Promise<PredictionResponse> {
+    return this.categorizerService.predict(body.text, {
+      userId: req?.user?.id,
+      roomId: body.roomId,
+    });
   }
 
   @Post('retrain')
@@ -31,5 +37,11 @@ export class CategorizerController {
   async flushCache(): Promise<{ deleted: number }> {
     const deleted = await this.predictionCache.flushCacheByPrefix('ml:predict:*');
     return { deleted };
+  }
+
+  @Get('metrics')
+  getMetrics(@Query('days') days?: string) {
+    const period = Math.max(1, Number(days || 30) || 30);
+    return this.categorizerService.getMetrics(period);
   }
 }

@@ -26,13 +26,18 @@ export class CategoriesController {
   }
 
   @Get('user/:userId')
-  getCategoriesByUserId(@Param('userId') userId: string) {
+  getCategoriesByUserId(@Param('userId') userId: string, @Req() req: any) {
     if (!userId?.trim()) {
       throw new BadRequestException(
         'Укажите userId в пути: GET /api/categories/user/:userId (например, UUID пользователя).',
       );
     }
-    return this.categoriesService.getCategoriesByUserId(userId.trim());
+    const uid = userId.trim();
+    // Только свои категории (не чужой userId)
+    if (req.user?.id !== uid && !req.user?.isService) {
+      throw new BadRequestException('Нет доступа к категориям другого пользователя');
+    }
+    return this.categoriesService.getCategoriesByUserId(uid);
   }
 
   @Get(':id')

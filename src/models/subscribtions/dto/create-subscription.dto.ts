@@ -15,6 +15,10 @@ export class CreateSubscriptionDto {
 
   @IsOptional()
   @IsString()
+  groupRoomId?: string;
+
+  @IsOptional()
+  @IsString()
   categoryId?: string;
 
   @IsString()
