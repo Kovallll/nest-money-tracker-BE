@@ -1,7 +1,23 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { Pool } from 'pg';
 import { PG_POOL } from '@/pg/pg.module';
-import { CategoryLineChartDto, ExpensesOverviewDto } from '@/types';
+import { GROUP_ROOM_CATEGORY_NAMES } from '@/models/categories/seed';
+import { CategoryLineChartDto, ExpensesOverviewDto, StatisticsPiePeriod } from '@/types';
+
+const PIE_PERIOD_VALUES: StatisticsPiePeriod[] = [
+  'current_month',
+  'last_3',
+  'last_6',
+  'last_12',
+  'all',
+];
+
+function normalizePiePeriod(raw?: string): StatisticsPiePeriod {
+  const v = String(raw ?? '')
+    .trim()
+    .toLowerCase() as StatisticsPiePeriod;
+  return PIE_PERIOD_VALUES.includes(v) ? v : 'current_month';
+}
 
 interface TxRow {
   category_id: string | null;
@@ -87,12 +103,15 @@ export class StatisticsService {
     locale?: string;
     userId?: string;
     roomId?: string;
+    /** Период для pie (Categories share). По умолчанию текущий месяц. */
+    piePeriod?: string;
   }): Promise<ExpensesOverviewDto> {
     const monthsBar = params?.monthsBar ?? 6;
     const topK = params?.topK; // undefined = все категории
     const locale = params?.locale ?? 'en';
     const userId = params?.userId;
     const roomId = params?.roomId;
+    const piePeriod = normalizePiePeriod(params?.piePeriod);
 
     const now = new Date();
     const year = now.getFullYear();
@@ -118,16 +137,42 @@ export class StatisticsService {
       monthMap.set(monthKey, (monthMap.get(monthKey) ?? 0) + parseFloat(t.amount));
     }
 
+    const categoryIds = Array.from(byCategoryAndMonth.keys()).filter(Boolean);
+
     const pieLabels: string[] = [];
     const pieData: number[] = [];
-    const currentMonthKey = year * 12 + currentMonth;
-    const categoryIds = Array.from(byCategoryAndMonth.keys()).filter(Boolean);
-    for (const catId of categoryIds) {
-      const title = categories.get(catId) ?? catId;
-      const monthMap = byCategoryAndMonth.get(catId)!;
-      const sum = monthMap.get(currentMonthKey) ?? 0;
-      pieLabels.push(title);
-      pieData.push(+sum.toFixed(2));
+
+    if (piePeriod === 'all') {
+      const allTx = await this.fetchExpenseTransactionsAllTime(userId, roomId);
+      const totals = new Map<string, number>();
+      for (const t of allTx) {
+        const catId = t.category_id ?? '';
+        if (!catId) continue;
+        totals.set(catId, (totals.get(catId) ?? 0) + parseFloat(t.amount));
+      }
+      const sorted = Array.from(totals.entries())
+        .filter(([, sum]) => sum > 0)
+        .sort((a, b) => b[1] - a[1]);
+      for (const [catId, sum] of sorted) {
+        const rounded = +sum.toFixed(2);
+        if (rounded <= 0) continue;
+        pieLabels.push(categories.get(catId) ?? catId);
+        pieData.push(rounded);
+      }
+    } else {
+      const pieMonthKeys = this.getPiePeriodMonthKeys(piePeriod, now);
+      for (const catId of categoryIds) {
+        const title = categories.get(catId) ?? catId;
+        const monthMap = byCategoryAndMonth.get(catId)!;
+        let sumForPie = 0;
+        for (const [monthKey, v] of monthMap.entries()) {
+          if (pieMonthKeys.has(monthKey)) sumForPie += v;
+        }
+        const rounded = +sumForPie.toFixed(2);
+        if (rounded <= 0) continue;
+        pieLabels.push(title);
+        pieData.push(rounded);
+      }
     }
     const pieColors = pieData.map((_, i) => this.palette[i % this.palette.length]);
 
@@ -180,8 +225,45 @@ export class StatisticsService {
           },
         ],
       },
-      meta: { monthIndex: currentMonth, year, monthsBar, topK },
+      meta: { monthIndex: currentMonth, year, monthsBar, topK, piePeriod },
     };
+  }
+
+  private getPiePeriodMonthKeys(period: StatisticsPiePeriod, ref: Date): Set<number> {
+    if (period === 'current_month') {
+      return new Set([ref.getFullYear() * 12 + ref.getMonth()]);
+    }
+    const n = period === 'last_3' ? 3 : period === 'last_6' ? 6 : 12;
+    const months = this.buildLastMonths(n, ref);
+    return new Set(months.map((m) => m.getFullYear() * 12 + m.getMonth()));
+  }
+
+  private async fetchExpenseTransactionsAllTime(
+    userId?: string,
+    roomId?: string,
+  ): Promise<TxRow[]> {
+    if (roomId) {
+      const { rows } = await this.pool.query(
+        `SELECT category_id, date, amount::text AS amount FROM group_transactions
+         WHERE room_id = $1 AND COALESCE(type::text, 'expense') = 'expense'`,
+        [roomId],
+      );
+      return rows.map((r) => ({
+        category_id: r.category_id,
+        date: r.date instanceof Date ? r.date : new Date(r.date),
+        amount: r.amount,
+      }));
+    }
+    const sql = userId
+      ? `SELECT category_id, date, amount FROM transactions WHERE type = 'expense' AND user_id = $1`
+      : `SELECT category_id, date, amount FROM transactions WHERE type = 'expense'`;
+    const params = userId ? [userId] : [];
+    const { rows } = await this.pool.query(sql, params);
+    return rows.map((r) => ({
+      category_id: r.category_id,
+      date: r.date instanceof Date ? r.date : new Date(r.date),
+      amount: r.amount,
+    }));
   }
 
   private async fetchExpenseTransactions(
@@ -195,7 +277,8 @@ export class StatisticsService {
     if (roomId) {
       const { rows } = await this.pool.query(
         `SELECT category_id, date, amount::text AS amount FROM group_transactions
-         WHERE room_id = $1 AND date >= $2 AND date <= $3`,
+         WHERE room_id = $1 AND date >= $2 AND date <= $3
+           AND COALESCE(type::text, 'expense') = 'expense'`,
         [roomId, start, end],
       );
       return rows.map((r) => ({
@@ -228,7 +311,8 @@ export class StatisticsService {
     if (roomId) {
       const { rows } = await this.pool.query(
         `SELECT category_id, date, amount::text AS amount FROM group_transactions
-         WHERE room_id = $1 AND date >= $2 AND date <= $3`,
+         WHERE room_id = $1 AND date >= $2 AND date <= $3
+           AND COALESCE(type::text, 'expense') = 'expense'`,
         [roomId, start, end],
       );
       return rows.map((r) => ({
@@ -256,8 +340,8 @@ export class StatisticsService {
     if (roomId) {
       const res = await this.pool.query(
         `SELECT id, name FROM categories
-         WHERE group_room_id = $1 OR (user_id IS NULL AND group_room_id IS NULL)`,
-        [roomId],
+         WHERE group_room_id = $1 AND name = ANY($2::text[])`,
+        [roomId, [...GROUP_ROOM_CATEGORY_NAMES]],
       );
       rows = res.rows;
     } else {

@@ -14,6 +14,7 @@ import { randomBytes } from 'crypto';
 import { ReceiptOcrService } from '@/receipt-ocr/receipt-ocr.service';
 import { AiOrchestratorService } from '@/ai/ai-orchestrator.service';
 import { TransactionsService } from '@/models/transactions/transactions.service';
+import { CategoriesService } from '@/models/categories/categories.service';
 
 type UserContext = {
   userId: string;
@@ -42,6 +43,8 @@ type PendingTx = {
   date: string;
   currencyCode: 'BYN' | 'USD' | 'EUR' | 'RUB';
   paymentMethod: 'cash' | 'card';
+  /** false — не списывать с карты при создании */
+  affectsCardBalance?: boolean;
 };
 
 @Injectable()
@@ -55,6 +58,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     private readonly receiptOcrService: ReceiptOcrService,
     private readonly aiService: AiOrchestratorService,
     private readonly transactionsService: TransactionsService,
+    private readonly categoriesService: CategoriesService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -319,6 +323,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         date: tx.date,
         currencyCode: tx.currencyCode,
         paymentMethod: tx.paymentMethod,
+        affectsCardBalance: tx.affectsCardBalance !== false,
       });
 
       await this.pool.query(
@@ -327,8 +332,12 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       );
 
       await ctx.answerCbQuery('Подтверждено');
+      const cardLine =
+        created.affectsCardBalance !== false
+          ? 'Списание с карты: да'
+          : 'Списание с карты: нет';
       await ctx.reply(
-        `Транзакция создана.\nСумма: ${created.amount} ${created.currencyCode}\nТип: ${created.type}\nДата: ${created.date}`,
+        `Транзакция создана.\nСумма: ${created.amount} ${created.currencyCode}\nТип: ${created.type}\nДата: ${created.date}\n${cardLine}`,
       );
     } catch (error) {
       await this.replyPipelineError(ctx, error);
@@ -424,6 +433,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       `Дата: ${normalizedDate}`,
       `Категория: ${categoryTitle}`,
       `Карта: ${cardName}`,
+      `Списание с карты: ${finalParsed.affectsCardBalance !== false ? 'да' : 'нет'}`,
       `Заголовок: ${finalParsed.title}`,
       finalParsed.description ? `Описание: ${finalParsed.description}` : null,
     ]
@@ -449,6 +459,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       `Дата: ${tx.date}`,
       `Категория: ${categoryTitle}`,
       `Карта: ${cardName}`,
+      `Списание с карты: ${tx.affectsCardBalance !== false ? 'да' : 'нет'}`,
       `Заголовок: ${tx.title}`,
       tx.description ? `Описание: ${tx.description}` : null,
     ]
@@ -717,8 +728,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       SELECT
         ut.user_id::text AS user_id,
         cards_agg.primary_card_id,
-        cards_agg.cards,
-        categories_agg.categories
+        cards_agg.cards
       FROM user_telegram ut
       LEFT JOIN LATERAL (
         SELECT
@@ -744,23 +754,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         WHERE c.user_id = ut.user_id
           AND c.is_active = true
       ) cards_agg ON true
-      LEFT JOIN LATERAL (
-        SELECT
-          COALESCE(
-            json_agg(
-              json_build_object(
-                'id', cat.id,
-                'title', cat.name,
-                'icon', COALESCE(cat.icon, 'category'),
-                'color', COALESCE(cat.color, '#9CA3AF')
-              )
-              ORDER BY cat.name
-            ) FILTER (WHERE cat.id IS NOT NULL),
-            '[]'::json
-          ) AS categories
-        FROM categories cat
-        WHERE cat.user_id = ut.user_id OR cat.user_id IS NULL
-      ) categories_agg ON true
       WHERE ut.telegram_user_id = $1
       ORDER BY ut.linked_at DESC
       LIMIT 1
@@ -784,8 +777,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         bankName?: string;
         cardNumber?: string;
       }>;
-      categories: Array<{ id: string; title: string; icon: string; color: string }>;
     };
+
+    const categoryItems = await this.categoriesService.getCategoriesByUserId(row.user_id);
 
     return {
       userId: row.user_id,
@@ -800,7 +794,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         bankName: c.bankName ? String(c.bankName) : undefined,
         cardNumber: c.cardNumber ? String(c.cardNumber) : undefined,
       })),
-      categories: (row.categories ?? []).map((c) => ({
+      categories: categoryItems.map((c) => ({
         id: String(c.id),
         title: String(c.title),
         icon: String(c.icon || 'category'),

@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
   ConflictException,
+  BadRequestException,
   OnModuleInit,
 } from '@nestjs/common';
 import { Pool } from 'pg';
@@ -12,7 +13,11 @@ import { v4 as uuid4 } from 'uuid';
 import { PG_POOL } from '@/pg/pg.module';
 import { CategoryItem, CreateCategoryItem } from '@/types';
 import { Tabs } from '@/enums';
-import { seedCategories, DEFAULT_USER_VISIBLE_BASE_CATEGORY_NAMES } from './seed';
+import {
+  seedCategories,
+  DEFAULT_USER_VISIBLE_BASE_CATEGORY_NAMES,
+  GROUP_ROOM_CATEGORY_NAMES,
+} from './seed';
 import { CategorizerService } from '@/categorizer/categorizer.service';
 import { VALID_CATEGORY_ICONS, DEFAULT_CATEGORY_ICON } from './valid-icons.const';
 import { RoomMembershipService } from '@/common/room-membership.service';
@@ -73,11 +78,14 @@ export class CategoriesService implements OnModuleInit {
       this.mlRetrainInFlight = false;
       if (this.mlRetrainQueued) {
         this.mlRetrainQueued = false;
-        setTimeout(() => {
-          this.notifyML().catch((e) =>
-            this.logger.warn(`Повторное уведомление ML не удалось: ${(e as Error).message}`),
-          );
-        }, Math.max(0, this.nextMlNotifyAt - Date.now()));
+        setTimeout(
+          () => {
+            this.notifyML().catch((e) =>
+              this.logger.warn(`Повторное уведомление ML не удалось: ${(e as Error).message}`),
+            );
+          },
+          Math.max(0, this.nextMlNotifyAt - Date.now()),
+        );
       }
     }
   }
@@ -175,18 +183,34 @@ export class CategoriesService implements OnModuleInit {
    */
   async ensureDefaultPersonalCategories(userId: string): Promise<void> {
     const names = [...DEFAULT_USER_VISIBLE_BASE_CATEGORY_NAMES];
-    /** Одна строка на имя: при нескольких глобальных шаблонах с тем же name INSERT иначе вставляет дубликаты за один запрос. */
+    /**
+     * Берём шаблон из глобальных категорий, если есть; иначе — фиксированные значения
+     * (после удаления глобальных шаблонов миграцией).
+     */
     await this.pool.query(
       `INSERT INTO categories (id, name, icon, color, user_id, updated_at)
-       SELECT gen_random_uuid(), g.name, g.icon, g.color, $1::uuid, NOW()
+       SELECT gen_random_uuid(), x.name, x.icon, x.color, $1::uuid, NOW()
        FROM (
-         SELECT DISTINCT ON (g.name) g.name, g.icon, g.color
-         FROM categories g
-         WHERE g.user_id IS NULL AND g.name = ANY($2::text[])
-         ORDER BY g.name, g.id
-       ) g
+         SELECT DISTINCT ON (sub.name) sub.name, sub.icon, sub.color
+         FROM (
+           SELECT g.name, g.icon, g.color, 0 AS ord
+           FROM categories g
+           WHERE g.user_id IS NULL
+             AND g.group_room_id IS NULL
+             AND g.name = ANY($2::text[])
+           UNION ALL
+           SELECT v.name, v.icon, v.color, 1
+           FROM (
+             VALUES
+               ('Subscriptions'::text, 'subscriptions'::text, '#7C3AED'::text),
+               ('Goals'::text, 'savings'::text, '#10B981'::text)
+           ) AS v(name, icon, color)
+           WHERE v.name = ANY($2::text[])
+         ) sub
+         ORDER BY sub.name, sub.ord
+       ) x
        WHERE NOT EXISTS (
-         SELECT 1 FROM categories c WHERE c.user_id = $1::uuid AND c.name = g.name
+         SELECT 1 FROM categories c WHERE c.user_id = $1::uuid AND c.name = x.name
        )`,
       [userId, names],
     );
@@ -285,8 +309,28 @@ export class CategoriesService implements OnModuleInit {
     }));
   }
 
-  /** Категории комнаты + глобальные шаблоны; агрегаты по group_transactions этой комнаты. */
+  /** Создать в комнате дефолтные Goals и Subscriptions, если их ещё нет. */
+  private async ensureGroupRoomCategoryDefaults(roomId: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO categories (id, name, icon, color, user_id, group_room_id, updated_at)
+       SELECT gen_random_uuid(), x.name, x.icon, x.color, NULL, $1::uuid, NOW()
+       FROM (
+         VALUES
+           ('Goals'::text, 'savings'::text, '#10B981'::text),
+           ('Subscriptions'::text, 'subscriptions'::text, '#7C3AED'::text)
+       ) AS x(name, icon, color)
+       WHERE NOT EXISTS (
+         SELECT 1 FROM categories c
+         WHERE c.group_room_id = $1::uuid AND c.name = x.name
+       )`,
+      [roomId],
+    );
+  }
+
+  /** Только категории комнаты (Goals, Subscriptions); без глобальных шаблонов — иначе ИИ/телеграм видят лишние id. */
   async getCategoriesByRoomId(roomId: string): Promise<CategoryItem[]> {
+    await this.ensureGroupRoomCategoryDefaults(roomId);
+    const allowed = [...GROUP_ROOM_CATEGORY_NAMES];
     const { rows: categories } = await this.pool.query(
       `SELECT 
         c.id,
@@ -295,18 +339,18 @@ export class CategoriesService implements OnModuleInit {
         c.color,
         c.created_at,
         c.updated_at,
-        COALESCE(SUM(gt.amount), 0) as total_expenses,
-        0::numeric as total_revenues
+        COALESCE(SUM(CASE WHEN COALESCE(gt.type::text, 'expense') = 'expense' THEN gt.amount ELSE 0 END), 0) as total_expenses,
+        COALESCE(SUM(CASE WHEN COALESCE(gt.type::text, 'expense') = 'revenue' THEN gt.amount ELSE 0 END), 0) as total_revenues
       FROM categories c
       LEFT JOIN group_transactions gt ON gt.category_id = c.id AND gt.room_id = $1
-      WHERE c.group_room_id = $1 OR (c.user_id IS NULL AND c.group_room_id IS NULL)
+      WHERE c.group_room_id = $1 AND c.name = ANY($2::text[])
       GROUP BY c.id, c.name, c.icon, c.color, c.created_at, c.updated_at
       ORDER BY c.name`,
-      [roomId],
+      [roomId, allowed],
     );
 
     const { rows: gtx } = await this.pool.query(
-      `SELECT gt.id, gt.amount, gt.date, gt.title, gt.description, c.name as category_name, gt.category_id
+      `SELECT gt.id, gt.amount, gt.date, gt.title, gt.description, c.name as category_name, gt.category_id, gt.type
        FROM group_transactions gt
        JOIN categories c ON c.id = gt.category_id
        WHERE gt.room_id = $1
@@ -318,10 +362,11 @@ export class CategoriesService implements OnModuleInit {
     for (const t of gtx) {
       const cid = t.category_id;
       if (!transactionsByCategory[cid]) transactionsByCategory[cid] = [];
+      const txType = String(t.type ?? 'expense') === 'revenue' ? Tabs.Revenues : Tabs.Expenses;
       transactionsByCategory[cid].push({
         id: t.id,
         amount: parseFloat(t.amount),
-        type: Tabs.Expenses,
+        type: txType,
         date: t.date instanceof Date ? t.date.toISOString().split('T')[0] : t.date,
         title: t.title ?? t.description ?? '',
         description: t.description,
@@ -337,8 +382,8 @@ export class CategoriesService implements OnModuleInit {
       updatedAt: cat.updated_at?.toISOString?.() ?? cat.updated_at ?? undefined,
       totalExpenses: parseFloat(cat.total_expenses),
       totalRevenues: parseFloat(cat.total_revenues),
-      expenses: transactionsByCategory[cat.id] || [],
-      revenues: [],
+      expenses: transactionsByCategory[cat.id]?.filter((x) => x.type === Tabs.Expenses) || [],
+      revenues: transactionsByCategory[cat.id]?.filter((x) => x.type === Tabs.Revenues) || [],
     }));
   }
 
@@ -349,53 +394,13 @@ export class CategoriesService implements OnModuleInit {
 
   async createCategoryForRoom(
     roomId: string,
-    category: CreateCategoryItem,
+    _category: CreateCategoryItem,
     actorId: string,
   ): Promise<CategoryItem> {
     await this.roomMembership.assertRoomMember(roomId, actorId);
-    const id =
-      category.id && CategoriesService.UUID_REGEX.test(category.id) ? category.id : uuid4();
-
-    const exists = await this.pool.query(
-      'SELECT 1 FROM categories WHERE group_room_id = $1 AND name = $2',
-      [roomId, category.name],
+    throw new BadRequestException(
+      'В групповой комнате доступны только категории Goals и Subscriptions; создавать новые нельзя.',
     );
-    if ((exists?.rowCount ?? 0) > 0) {
-      throw new ConflictException('Категория с таким именем уже есть в комнате.');
-    }
-
-    const { rows } = await this.pool.query(
-      `INSERT INTO categories (id, name, icon, color, user_id, group_room_id, updated_at)
-       VALUES ($1, $2, $3, $4, NULL, $5, NOW())
-       RETURNING id, name as title, icon, color, created_at, updated_at`,
-      [id, category.name, category.icon || 'category', category.color || '#CCCCCC', roomId],
-    );
-
-    if (category.examples?.length) {
-      for (const example of category.examples) {
-        await this.pool.query(
-          `INSERT INTO examples (category_id, text, user_id) VALUES ($1, $2, NULL)
-           ON CONFLICT (category_id, text) DO NOTHING`,
-          [id, example],
-        );
-      }
-    }
-
-    this.logger.log(`➕ Категория комнаты: ${category.name} (${id})`);
-    this.notifyML();
-
-    return {
-      id: rows[0].id,
-      title: rows[0].title,
-      icon: rows[0].icon,
-      color: rows[0].color,
-      createdAt: rows[0].created_at?.toISOString?.() ?? rows[0].created_at ?? undefined,
-      updatedAt: rows[0].updated_at?.toISOString?.() ?? rows[0].updated_at ?? undefined,
-      expenses: [],
-      revenues: [],
-      totalExpenses: 0,
-      totalRevenues: 0,
-    };
   }
 
   async getCategoryById(id: string): Promise<CategoryItem | null> {
@@ -431,9 +436,7 @@ export class CategoriesService implements OnModuleInit {
     );
 
     if ((exists?.rowCount ?? 0) > 0) {
-      throw new ConflictException(
-        'Категория с таким именем уже существует. Укажите другое имя.',
-      );
+      throw new ConflictException('Категория с таким именем уже существует. Укажите другое имя.');
     }
 
     const { rows } = await this.pool.query(
@@ -576,8 +579,8 @@ export class CategoriesService implements OnModuleInit {
     if (reassignTo) {
       if (roomId) {
         const targetExists = await this.pool.query(
-          `SELECT 1 FROM categories WHERE id = $1 AND (group_room_id = $2 OR (user_id IS NULL AND group_room_id IS NULL))`,
-          [reassignTo, roomId],
+          `SELECT 1 FROM categories WHERE id = $1 AND group_room_id = $2 AND name = ANY($3::text[])`,
+          [reassignTo, roomId, [...GROUP_ROOM_CATEGORY_NAMES]],
         );
         if ((targetExists.rowCount ?? 0) === 0) {
           throw new NotFoundException(`Категория назначения ${reassignTo} не найдена`);
@@ -602,10 +605,10 @@ export class CategoriesService implements OnModuleInit {
         if ((targetExists.rowCount ?? 0) === 0) {
           throw new NotFoundException(`Категория назначения ${reassignTo} не найдена`);
         }
-        await this.pool.query(
-          'UPDATE transactions SET category_id = $1 WHERE category_id = $2',
-          [reassignTo, id],
-        );
+        await this.pool.query('UPDATE transactions SET category_id = $1 WHERE category_id = $2', [
+          reassignTo,
+          id,
+        ]);
         await this.pool.query('UPDATE goals SET category_id = $1 WHERE category_id = $2', [
           reassignTo,
           id,
@@ -632,9 +635,10 @@ export class CategoriesService implements OnModuleInit {
       } else {
         await this.pool.query('DELETE FROM transactions WHERE category_id = $1', [id]);
         await this.pool.query('UPDATE goals SET category_id = NULL WHERE category_id = $1', [id]);
-        await this.pool.query('UPDATE subscriptions SET category_id = NULL WHERE category_id = $1', [
-          id,
-        ]);
+        await this.pool.query(
+          'UPDATE subscriptions SET category_id = NULL WHERE category_id = $1',
+          [id],
+        );
       }
     }
 

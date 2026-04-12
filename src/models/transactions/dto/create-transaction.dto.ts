@@ -6,6 +6,7 @@ import {
   Min,
   MaxLength,
   IsDateString,
+  IsBoolean,
 } from 'class-validator';
 
 export class CreateTransactionDto {
@@ -46,6 +47,10 @@ export class CreateTransactionDto {
   @IsString()
   @IsIn(['cash', 'card'])
   paymentMethod?: 'cash' | 'card';
+
+  @IsOptional()
+  @IsBoolean()
+  affectsCardBalance?: boolean;
 
   /** Redis cache key from categorizer/predict (for feedback: was prediction accepted). */
   @IsOptional()

@@ -13,6 +13,14 @@ export interface CategoryLineChartDto {
   }>;
 }
 
+/** Период агрегации для круговой диаграммы «Categories share» (query `piePeriod`). */
+export type StatisticsPiePeriod =
+  | 'current_month'
+  | 'last_3'
+  | 'last_6'
+  | 'last_12'
+  | 'all';
+
 export interface ChartJsPie {
   labels: string[];
   datasets: Array<{ data: number[]; backgroundColor: string[] }>;
@@ -35,7 +43,7 @@ export interface ChartJsLine {
 }
 
 export interface ExpensesOverviewDto {
-  pie: ChartJsPie; // доли категорий за текущий месяц
+  pie: ChartJsPie; // доли категорий за период meta.piePeriod
   bar: ChartJsBar; // по категориям за последние N месяцев (топ-K)
   line: ChartJsLine; // суммарно по всем категориям за 12 мес.
   meta: {
@@ -43,6 +51,7 @@ export interface ExpensesOverviewDto {
     year: number;
     monthsBar: number;
     topK?: number; // при отсутствии показываются все категории
+    piePeriod: StatisticsPiePeriod;
   };
 }
 

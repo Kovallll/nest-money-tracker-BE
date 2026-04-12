@@ -54,6 +54,7 @@ export class StatisticsController {
     @Query('monthsBar') monthsBar?: string,
     @Query('topK') topK?: string,
     @Query('locale') locale?: string,
+    @Query('piePeriod') piePeriod?: string,
     @Query('userId') userId?: string,
     @Query('roomId') roomId?: string,
     @Req() req?: any,
@@ -69,6 +70,7 @@ export class StatisticsController {
           monthsBar: monthsBar ? Number(monthsBar) : undefined,
           topK: topK ? Number(topK) : undefined,
           locale,
+          piePeriod,
           roomId: rid,
         }),
       );
@@ -80,6 +82,7 @@ export class StatisticsController {
       monthsBar: monthsBar ? Number(monthsBar) : undefined,
       topK: topK ? Number(topK) : undefined,
       locale,
+      piePeriod,
       userId: uid,
     });
   }

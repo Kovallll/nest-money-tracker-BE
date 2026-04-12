@@ -96,7 +96,12 @@ export class GeminiProvider implements AiProvider {
 
   private normalizeParsed(
     parsed: Record<string, any>,
-    input: { context: ParseReceiptInput['context']; sourceTextForCurrency: string; fallbackCardId?: number },
+    input: {
+      context: ParseReceiptInput['context'];
+      sourceTextForCurrency: string;
+      fallbackCardId?: number;
+      mergeFrom?: ParsedTransactionDraft;
+    },
   ): ParsedTransactionDraft {
     const categories = input.context.categories;
     const cards = input.context.cards || [];
@@ -124,6 +129,11 @@ export class GeminiProvider implements AiProvider {
         ? parsed.currencyCode
         : 'BYN';
 
+    const affectsCardBalance =
+      typeof parsed.affectsCardBalance === 'boolean'
+        ? parsed.affectsCardBalance
+        : input.mergeFrom?.affectsCardBalance !== false;
+
     return {
       userId: input.context.userId,
       cardId: selectedCardId,
@@ -135,6 +145,7 @@ export class GeminiProvider implements AiProvider {
       date: String(parsed.date || new Date().toISOString().slice(0, 10)),
       currencyCode,
       paymentMethod: parsed.paymentMethod === 'cash' ? 'cash' : 'card',
+      affectsCardBalance,
     };
   }
 
@@ -144,8 +155,9 @@ export class GeminiProvider implements AiProvider {
     const prompt = [
       'Ты анализируешь чек/сообщение пользователя и возвращаешь только JSON без markdown.',
       'Формат JSON:',
-      '{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue","paymentMethod":"cash|card","cardId":number,"categoryId":string}',
+      '{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue","paymentMethod":"cash|card","cardId":number,"categoryId":string} плюс опционально affectsCardBalance:boolean',
       'cardId выбирай только из списка карт пользователя, categoryId только из списка категорий.',
+      'affectsCardBalance: false только если пользователь явно просит не списывать с карты; иначе true или опусти поле.',
       'Если валюта в тексте явно не указана, ставь currencyCode="BYN".',
       `sourceType=${input.sourceType}`,
       'Текст:',
@@ -166,8 +178,9 @@ export class GeminiProvider implements AiProvider {
     const prompt = [
       'Ты редактируешь готовый черновик транзакции по комментарию пользователя.',
       'Верни только JSON без markdown в формате:',
-      '{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue","paymentMethod":"cash|card","cardId":number,"categoryId":string}',
+      '{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue","paymentMethod":"cash|card","cardId":number,"categoryId":string} плюс опционально affectsCardBalance:boolean',
       'Меняй только то, что пользователь попросил. Остальное оставляй из текущего черновика.',
+      'affectsCardBalance: false если просят не списывать с карты; иначе сохраняй из черновика.',
       'cardId выбирай только из списка карт, categoryId только из списка категорий.',
       'Текущий черновик:',
       JSON.stringify(input.currentTx),
@@ -183,6 +196,7 @@ export class GeminiProvider implements AiProvider {
       context: input.context,
       sourceTextForCurrency: input.editText,
       fallbackCardId: input.currentTx.cardId,
+      mergeFrom: input.currentTx,
     });
   }
 
@@ -190,7 +204,7 @@ export class GeminiProvider implements AiProvider {
     const prompt = [
       'Ты проверяешь и корректируешь черновик транзакции после OCR чека.',
       'Верни только JSON без markdown в формате:',
-      '{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue","paymentMethod":"cash|card","cardId":number,"categoryId":string}',
+      '{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue","paymentMethod":"cash|card","cardId":number,"categoryId":string} плюс опционально affectsCardBalance:boolean',
       'Важные правила:',
       '- title и description должны быть короткими (2-6 слов) и осмысленными.',
       '- Для title/description используй НАЗВАНИЕ МАГАЗИНА из шапки чека (например после слова "магазин"), если оно есть.',
@@ -211,6 +225,7 @@ export class GeminiProvider implements AiProvider {
       context: input.context,
       sourceTextForCurrency: input.sourceText,
       fallbackCardId: input.currentTx.cardId,
+      mergeFrom: input.currentTx,
     });
   }
 }

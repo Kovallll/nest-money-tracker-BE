@@ -34,6 +34,8 @@ export type ParsedTransactionDraft = {
   date: string;
   currencyCode: 'BYN' | 'USD' | 'EUR' | 'RUB';
   paymentMethod: 'cash' | 'card';
+  /** false = не менять баланс карты при подтверждении. По умолчанию true. */
+  affectsCardBalance?: boolean;
 };
 
 export type EditDraftInput = {

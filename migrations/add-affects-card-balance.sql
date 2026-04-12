@@ -1,0 +1,5 @@
+ALTER TABLE transactions
+    ADD COLUMN IF NOT EXISTS affects_card_balance BOOLEAN NOT NULL DEFAULT TRUE;
+
+ALTER TABLE group_transactions
+    ADD COLUMN IF NOT EXISTS affects_card_balance BOOLEAN NOT NULL DEFAULT TRUE;

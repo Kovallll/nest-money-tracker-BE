@@ -19,6 +19,7 @@ interface UpdateTransactionDto extends Partial<TransactionCreate> {
 @Injectable()
 export class TransactionsService implements OnModuleInit {
   private readonly logger = new Logger(TransactionsService.name);
+  private txAffectsColState: 'unknown' | 'yes' | 'no' = 'unknown';
 
   constructor(
     @Inject(PG_POOL) private readonly pool: Pool,
@@ -27,7 +28,51 @@ export class TransactionsService implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    await this.ensureTxAffectsCardBalanceColumn();
     await this.seedIfEmpty();
+  }
+
+  private async queryTxAffectsColExists(): Promise<boolean> {
+    const { rows } = await this.pool.query(
+      `SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'transactions'
+         AND column_name = 'affects_card_balance'
+       LIMIT 1`,
+    );
+    return rows.length > 0;
+  }
+
+  private async tryAddTxAffectsColumn(): Promise<void> {
+    try {
+      await this.pool.query(
+        `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS affects_card_balance BOOLEAN NOT NULL DEFAULT TRUE`,
+      );
+    } catch (err) {
+      this.logger.warn(`transactions ADD affects_card_balance: ${(err as Error).message}`);
+    }
+  }
+
+  /** Колонка: учитывать ли транзакцию в балансе карты. */
+  async ensureTxAffectsCardBalanceColumn(): Promise<boolean> {
+    if (this.txAffectsColState === 'yes') return true;
+    if (this.txAffectsColState === 'no') return false;
+
+    if (await this.queryTxAffectsColExists()) {
+      this.txAffectsColState = 'yes';
+      return true;
+    }
+    await this.tryAddTxAffectsColumn();
+    if (await this.queryTxAffectsColExists()) {
+      this.txAffectsColState = 'yes';
+      this.logger.log('transactions.affects_card_balance готова');
+      return true;
+    }
+    this.txAffectsColState = 'no';
+    this.logger.warn(
+      'transactions.affects_card_balance отсутствует; списание с карты всегда применяется до миграции БД',
+    );
+    return false;
   }
 
   private async seedIfEmpty(): Promise<void> {
@@ -99,6 +144,8 @@ export class TransactionsService implements OnModuleInit {
       description: row.description ?? null,
       date: row.date instanceof Date ? row.date.toISOString().split('T')[0] : row.date,
       paymentMethod: row.payment_method ?? null,
+      affectsCardBalance:
+        row.affects_card_balance === undefined ? true : row.affects_card_balance !== false,
       createdAt: row.created_at?.toISOString?.() ?? row.created_at,
       updatedAt: row.updated_at?.toISOString?.() ?? row.updated_at,
     };
@@ -181,6 +228,35 @@ export class TransactionsService implements OnModuleInit {
   }
 
   /**
+   * Групповая транзакция с личной карты: изменить баланс как у личного expense/revenue.
+   */
+  async applyPersonalCardForGroupTx(
+    payerUserId: string,
+    cardId: number,
+    amount: number,
+    currencyCode: string,
+    type: 'expense' | 'revenue',
+  ): Promise<void> {
+    await this.assertPersonalCardBelongsToUser(cardId, payerUserId);
+    const delta = TransactionsService.balanceDelta(type, amount);
+    await this.applyCardBalanceDelta(cardId, delta, currencyCode);
+  }
+
+  /** Откат эффекта {@link applyPersonalCardForGroupTx} при удалении групповой транзакции. */
+  async reversePersonalCardForGroupTx(
+    payerUserId: string,
+    cardId: number,
+    amount: number,
+    currencyCode: string,
+    type: 'expense' | 'revenue',
+  ): Promise<void> {
+    await this.assertPersonalCardBelongsToUser(cardId, payerUserId);
+    const reverseType = type === 'expense' ? 'revenue' : 'expense';
+    const delta = TransactionsService.balanceDelta(reverseType, amount);
+    await this.applyCardBalanceDelta(cardId, delta, currencyCode);
+  }
+
+  /**
    * Групповой расход, оплаченный с личной карты участника: уменьшить баланс карты (как expense).
    */
   async applyPersonalCardForGroupExpense(
@@ -189,9 +265,7 @@ export class TransactionsService implements OnModuleInit {
     amount: number,
     currencyCode: string,
   ): Promise<void> {
-    await this.assertPersonalCardBelongsToUser(cardId, payerUserId);
-    const delta = TransactionsService.balanceDelta('expense', amount);
-    await this.applyCardBalanceDelta(cardId, delta, currencyCode);
+    await this.applyPersonalCardForGroupTx(payerUserId, cardId, amount, currencyCode, 'expense');
   }
 
   /**
@@ -203,32 +277,51 @@ export class TransactionsService implements OnModuleInit {
     amount: number,
     currencyCode: string,
   ): Promise<void> {
-    await this.assertPersonalCardBelongsToUser(cardId, payerUserId);
-    const delta = TransactionsService.balanceDelta('revenue', amount);
-    await this.applyCardBalanceDelta(cardId, delta, currencyCode);
+    await this.reversePersonalCardForGroupTx(payerUserId, cardId, amount, currencyCode, 'expense');
   }
 
   async createTransaction(dto: CreateTransactionDto): Promise<Transaction> {
     const currencyCode = dto.currencyCode ?? 'BYN';
-    const { rows } = await this.pool.query(
-      `INSERT INTO transactions (user_id, card_id, category_id, type, amount, currency_code, title, description, date, payment_method)
+    const hasAffectsCol = await this.ensureTxAffectsCardBalanceColumn();
+    const affects = dto.affectsCardBalance !== false;
+    const { rows } = hasAffectsCol
+      ? await this.pool.query(
+          `INSERT INTO transactions (user_id, card_id, category_id, type, amount, currency_code, title, description, date, payment_method, affects_card_balance)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING *`,
+          [
+            dto.userId,
+            dto.cardId || null,
+            dto.categoryId || null,
+            dto.type,
+            dto.amount,
+            currencyCode,
+            dto.title ?? null,
+            dto.description ?? null,
+            dto.date,
+            dto.paymentMethod ?? null,
+            affects,
+          ],
+        )
+      : await this.pool.query(
+          `INSERT INTO transactions (user_id, card_id, category_id, type, amount, currency_code, title, description, date, payment_method)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [
-        dto.userId,
-        dto.cardId || null,
-        dto.categoryId || null,
-        dto.type,
-        dto.amount,
-        currencyCode,
-        dto.title ?? null,
-        dto.description ?? null,
-        dto.date,
-        dto.paymentMethod ?? null,
-      ],
-    );
+          [
+            dto.userId,
+            dto.cardId || null,
+            dto.categoryId || null,
+            dto.type,
+            dto.amount,
+            currencyCode,
+            dto.title ?? null,
+            dto.description ?? null,
+            dto.date,
+            dto.paymentMethod ?? null,
+          ],
+        );
     const cardId = dto.cardId ? Number(dto.cardId) : null;
-    if (cardId != null && !Number.isNaN(cardId)) {
+    if (cardId != null && !Number.isNaN(cardId) && (hasAffectsCol ? affects : true)) {
       const txCurrency = currencyCode;
       const delta = TransactionsService.balanceDelta(dto.type, dto.amount);
       await this.applyCardBalanceDelta(cardId, delta, txCurrency);
@@ -256,13 +349,51 @@ export class TransactionsService implements OnModuleInit {
     const existing = await this.getTransactionById(id);
     if (!existing) return null;
 
+    const hasAffectsCol = await this.ensureTxAffectsCardBalanceColumn();
+    const mergedAffects =
+      dto.affectsCardBalance === undefined
+        ? existing.affectsCardBalance !== false
+        : dto.affectsCardBalance !== false;
+
     const oldCardId = existing.cardId ? Number(existing.cardId) : null;
     const newCardId = dto.cardId !== undefined ? (dto.cardId ? Number(dto.cardId) : null) : oldCardId;
     const newType = dto.type ?? existing.type;
     const newAmount = dto.amount ?? existing.amount;
 
-    const { rows } = await this.pool.query(
-      `UPDATE transactions
+    const { rows } = hasAffectsCol
+      ? await this.pool.query(
+          `UPDATE transactions
+       SET user_id         = COALESCE($1, user_id),
+           card_id         = COALESCE($2, card_id),
+           category_id     = COALESCE($3, category_id),
+           type            = COALESCE($4, type),
+           amount          = COALESCE($5, amount),
+           currency_code   = COALESCE($6, currency_code),
+           title           = COALESCE($7, title),
+           description     = COALESCE($8, description),
+           date            = COALESCE($9, date),
+           payment_method  = COALESCE($10, payment_method),
+           affects_card_balance = $11,
+           updated_at      = NOW()
+       WHERE id = $12
+       RETURNING *`,
+          [
+            dto.userId ?? null,
+            dto.cardId !== undefined ? (dto.cardId || null) : null,
+            dto.categoryId || null,
+            dto.type ?? null,
+            dto.amount ?? null,
+            dto.currencyCode ?? null,
+            dto.title ?? null,
+            dto.description ?? null,
+            dto.date ?? null,
+            dto.paymentMethod ?? null,
+            mergedAffects,
+            id,
+          ],
+        )
+      : await this.pool.query(
+          `UPDATE transactions
        SET user_id         = COALESCE($1, user_id),
            card_id         = COALESCE($2, card_id),
            category_id     = COALESCE($3, category_id),
@@ -276,27 +407,27 @@ export class TransactionsService implements OnModuleInit {
            updated_at      = NOW()
        WHERE id = $11
        RETURNING *`,
-      [
-        dto.userId ?? null,
-        dto.cardId !== undefined ? (dto.cardId || null) : null,
-        dto.categoryId || null,
-        dto.type ?? null,
-        dto.amount ?? null,
-        dto.currencyCode ?? null,
-        dto.title ?? null,
-        dto.description ?? null,
-        dto.date ?? null,
-        dto.paymentMethod ?? null,
-        id,
-      ],
-    );
+          [
+            dto.userId ?? null,
+            dto.cardId !== undefined ? (dto.cardId || null) : null,
+            dto.categoryId || null,
+            dto.type ?? null,
+            dto.amount ?? null,
+            dto.currencyCode ?? null,
+            dto.title ?? null,
+            dto.description ?? null,
+            dto.date ?? null,
+            dto.paymentMethod ?? null,
+            id,
+          ],
+        );
 
     const newCurrency = dto.currencyCode ?? existing.currencyCode ?? 'BYN';
-    if (oldCardId != null && !Number.isNaN(oldCardId)) {
+    if (oldCardId != null && !Number.isNaN(oldCardId) && existing.affectsCardBalance !== false) {
       const revertDelta = -TransactionsService.balanceDelta(existing.type, existing.amount);
       await this.applyCardBalanceDelta(oldCardId, revertDelta, existing.currencyCode ?? 'BYN');
     }
-    if (newCardId != null && !Number.isNaN(newCardId)) {
+    if (newCardId != null && !Number.isNaN(newCardId) && mergedAffects) {
       const applyDelta = TransactionsService.balanceDelta(newType, newAmount);
       await this.applyCardBalanceDelta(newCardId, applyDelta, newCurrency);
     }
@@ -326,7 +457,12 @@ export class TransactionsService implements OnModuleInit {
     }
     const cardId = existing.cardId ? Number(existing.cardId) : null;
     const result = await this.pool.query('DELETE FROM transactions WHERE id = $1', [id]);
-    if ((result.rowCount ?? 0) > 0 && cardId != null && !Number.isNaN(cardId)) {
+    if (
+      (result.rowCount ?? 0) > 0 &&
+      cardId != null &&
+      !Number.isNaN(cardId) &&
+      existing.affectsCardBalance !== false
+    ) {
       const revertDelta = -TransactionsService.balanceDelta(existing.type, existing.amount);
       await this.applyCardBalanceDelta(cardId, revertDelta, existing.currencyCode ?? 'BYN');
     }

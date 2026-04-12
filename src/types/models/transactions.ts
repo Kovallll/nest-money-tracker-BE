@@ -14,6 +14,8 @@ export type Transaction = {
   date: string;
   /** Payment method: cash or card. Optional. */
   paymentMethod?: 'cash' | 'card' | null;
+  /** When false, transaction is linked to the card but balance is not changed. Default true. */
+  affectsCardBalance?: boolean;
   createdAt?: string;
   updatedAt?: string;
 };

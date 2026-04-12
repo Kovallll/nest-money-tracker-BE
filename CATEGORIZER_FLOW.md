@@ -34,6 +34,13 @@
 2. **Лексикон (Nest)**: подставляет категорию только если **название категории в БД** как-то совпадает с текстом (подстрока, префикс, нормализация ё/е). **Разные языки** («одежда» vs «Shopping») **не связываются** — это не семантический поиск.
 3. **Что помогает**: переименовать категорию под свой язык, добавить **примеры** в обучение (транзакции → examples), или дождаться обучения с **именем категории** в датасете (classifier добавляет `name` в строки обучения). После смены данных — **retrain** ML.
 
+## Отладка (логи)
+
+- **Nest** (`CategorizerService`): строки с префиксом `[categorizer]` — кэш (hit/miss/bad), ответ ML до `sanitize`, причины `sanitize: force Неизвестно`, шаги лексикона (`lexicon lookup`, hit/no hit, отсутствие `userId`).
+- **Python** (`classifier/server.py`): `classifier.predict:` — `clean`, размер кэша категорий, сырой вывод FastText, для каждого ранга `NO_MATCH` или совпадение с именем, итог `primary_out`.
+
+Ищите в логах: `NO_MATCH in categories_cache` (модель vs БД), `userId=MISSING` (JWT), `lexicon: no DB match` (текст не совпал с названиями категорий).
+
 ## Metrics
 
 - Endpoint: `GET /api/categorizer/metrics?days=30`

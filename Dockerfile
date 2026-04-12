@@ -2,9 +2,13 @@ FROM node:22-slim
 
 WORKDIR /app
 
-# Copy package files
+# Copy package files (Yarn 4 reads packageManager + .yarnrc.yml)
 COPY package*.json ./
 COPY yarn.lock ./
+COPY .yarnrc.yml ./
+
+# package.json pins yarn@4.x — use Corepack, not global Yarn 1.x from the image
+RUN corepack enable
 
 # Install dependencies
 RUN yarn install --frozen-lockfile

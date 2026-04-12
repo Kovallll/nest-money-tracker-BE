@@ -1,4 +1,4 @@
-import { Controller, Get, Query, Param, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, Post, Query, Param, UseGuards, Req } from '@nestjs/common';
 import { JwtAuthGuard } from '@/auth/jwt-auth.guard';
 import { AnalyticsSnapshotsService, PeriodType } from './analytics-snapshots.service';
 
@@ -30,6 +30,12 @@ export class AnalyticsSnapshotsController {
       dateTo,
       search,
     });
+  }
+
+  /** After manual export from the app header: persist current-period snapshot for Saved reports. */
+  @Post('from-export')
+  async createFromExport(@Req() req: { user: { id: string } }) {
+    return this.snapshotsService.createSnapshotFromExport(req.user.id);
   }
 
   @Get(':id')

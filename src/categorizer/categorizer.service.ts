@@ -5,6 +5,7 @@ import { firstValueFrom } from 'rxjs';
 import { retry, throwError, timer } from 'rxjs';
 import { AxiosError } from 'axios';
 import { PG_POOL } from '@/pg/pg.module';
+import { GROUP_ROOM_CATEGORY_NAMES } from '@/models/categories/seed';
 import { PredictionCacheService } from './prediction-cache.service';
 import { PredictionFeedbackService } from './prediction-feedback.service';
 
@@ -157,11 +158,85 @@ export class CategorizerService {
     if (!data.primary) {
       throw new HttpException('Нет результата предсказания', HttpStatus.INTERNAL_SERVER_ERROR);
     }
+    this.logger.log(
+      `[categorizer] ML raw primary id=${data.primary?.category_id ?? '(empty)'} name=${data.primary?.category_name} conf=${data.primary?.confidence} needs_confirmation=${data.needs_confirmation} alts=${data.alternatives?.length ?? 0}`,
+    );
     return {
       primary: data.primary,
       alternatives: data.alternatives || [],
       needs_confirmation: data.needs_confirmation ?? true,
       source: data.source || 'fasttext',
+    };
+  }
+
+  /** Дефолтные категории комнаты (дубль логики categories.service — без циклического импорта модулей). */
+  private async ensureGroupRoomCategoryRows(roomId: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO categories (id, name, icon, color, user_id, group_room_id, updated_at)
+       SELECT gen_random_uuid(), x.name, x.icon, x.color, NULL, $1::uuid, NOW()
+       FROM (
+         VALUES
+           ('Goals'::text, 'savings'::text, '#10B981'::text),
+           ('Subscriptions'::text, 'subscriptions'::text, '#7C3AED'::text)
+       ) AS x(name, icon, color)
+       WHERE NOT EXISTS (
+         SELECT 1 FROM categories c
+         WHERE c.group_room_id = $1::uuid AND c.name = x.name
+       )`,
+      [roomId],
+    );
+  }
+
+  private async getGroupRoomAllowedCategoryIds(roomId: string): Promise<Set<string>> {
+    const allowed = [...GROUP_ROOM_CATEGORY_NAMES];
+    const { rows } = await this.pool.query<{ id: string }>(
+      `SELECT id FROM categories
+       WHERE group_room_id = $1::uuid AND name = ANY($2::text[])`,
+      [roomId, allowed],
+    );
+    return new Set(rows.map((r) => r.id));
+  }
+
+  /**
+   * ML возвращает глобальные id категорий; для комнаты допустимы только Goals/Subscriptions этой комнаты.
+   */
+  private async clampPredictionToGroupRoom(
+    prediction: Prediction,
+    roomId: string | undefined,
+  ): Promise<Prediction> {
+    const rid = roomId?.trim();
+    if (!rid) return prediction;
+
+    await this.ensureGroupRoomCategoryRows(rid);
+    const allowed = await this.getGroupRoomAllowedCategoryIds(rid);
+    if (allowed.size === 0) return prediction;
+
+    const filterAlts = (alts: PredictionResult[]) =>
+      (alts ?? []).filter((a) => a.category_id && allowed.has(a.category_id));
+
+    const pid = prediction.primary?.category_id;
+    if (pid && allowed.has(pid)) {
+      return { ...prediction, alternatives: filterAlts(prediction.alternatives) };
+    }
+
+    if (pid) {
+      this.logger.warn(
+        `[categorizer] room scope: отброшен ML id=${pid} name=${prediction.primary?.category_name} — не из комнаты ${rid}`,
+      );
+    }
+
+    return {
+      ...prediction,
+      needs_confirmation: true,
+      primary: {
+        ...prediction.primary,
+        category_id: '',
+        category_name: 'Неизвестно',
+        category_icon: prediction.primary?.category_icon || '❓',
+        category_color: prediction.primary?.category_color || '#CCCCCC',
+        confidence: Math.min(Number(prediction.primary?.confidence || 0), 0.49),
+      },
+      alternatives: filterAlts(prediction.alternatives),
     };
   }
 
@@ -184,7 +259,24 @@ export class CategorizerService {
       normalized.primary.category_name === 'Неизвестно' ||
       normalized.primary.category_name === 'unknown';
 
-    if (!unknownPrimary) return normalized;
+    if (!unknownPrimary) {
+      this.logger.log(
+        `[categorizer] sanitize: ok id=${normalized.primary.category_id} name=${normalized.primary.category_name} conf=${normalized.primary.confidence}`,
+      );
+      return normalized;
+    }
+    const reasons: string[] = [];
+    if (!normalized.primary.category_id) reasons.push('empty_category_id');
+    if (!normalized.primary.category_name) reasons.push('empty_category_name');
+    if (
+      normalized.primary.category_name === 'Неизвестно' ||
+      normalized.primary.category_name === 'unknown'
+    ) {
+      reasons.push('ml_unknown_name');
+    }
+    this.logger.warn(
+      `[categorizer] sanitize: force Неизвестно reasons=[${reasons.join(', ')}] ml_id=${normalized.primary.category_id || '(empty)'} ml_name=${normalized.primary.category_name} ml_conf=${normalized.primary.confidence}`,
+    );
     return {
       ...normalized,
       needs_confirmation: true,
@@ -207,9 +299,20 @@ export class CategorizerService {
     context: PredictionContext,
     prediction: Prediction,
   ): Promise<Prediction> {
-    if (prediction.primary?.category_id) return prediction;
+    if (prediction.primary?.category_id) {
+      this.logger.log(`[categorizer] lexicon: skip (already have category_id)`);
+      return prediction;
+    }
     const hit = await this.lookupCategoryLexicon(text, context);
-    if (!hit) return prediction;
+    if (!hit) {
+      this.logger.warn(
+        `[categorizer] lexicon: no DB match userId=${context.userId ? 'set' : 'MISSING'} roomId=${context.roomId ?? 'none'} source=${prediction.source}`,
+      );
+      return prediction;
+    }
+    this.logger.log(
+      `[categorizer] lexicon: hit id=${hit.category_id} name=${hit.category_name} conf=${hit.confidence}`,
+    );
     return {
       ...prediction,
       primary: hit,
@@ -283,6 +386,7 @@ export class CategorizerService {
         `SELECT c.id, c.name, c.icon, c.color
          FROM categories c
          WHERE c.group_room_id = $1::uuid
+           AND c.name IN ('Goals', 'Subscriptions')
            AND COALESCE(c.is_archived, false) = false
            AND ${matchSql}
          ORDER BY
@@ -292,26 +396,6 @@ export class CategorizerService {
         [roomId, term],
       );
       if (roomRes.rows[0]) return this.rowToLexiconResult(roomRes.rows[0]);
-
-      const globalRes = await this.pool.query<{
-        id: string;
-        name: string;
-        icon: string | null;
-        color: string | null;
-      }>(
-        `SELECT c.id, c.name, c.icon, c.color
-         FROM categories c
-         WHERE c.group_room_id IS NULL
-           AND c.user_id IS NULL
-           AND COALESCE(c.is_archived, false) = false
-           AND ${matchSql.replaceAll('$2', '$1')}
-         ORDER BY
-           CASE WHEN ${CategorizerService.LEXICON_CAT_NORM} = $1 THEN 0 ELSE 1 END,
-           length(trim(c.name))
-         LIMIT 1`,
-        [term],
-      );
-      if (globalRes.rows[0]) return this.rowToLexiconResult(globalRes.rows[0]);
       return null;
     }
 
@@ -351,7 +435,16 @@ export class CategorizerService {
     const userId = context.userId?.trim() || undefined;
 
     try {
-      for (const term of this.lexiconSearchTerms(exact)) {
+      const terms = this.lexiconSearchTerms(exact);
+      this.logger.log(
+        `[categorizer] lexicon lookup terms=[${terms.map((t) => JSON.stringify(t)).join(', ')}] normalized=${JSON.stringify(exact)} userId=${userId ? 'set' : 'MISSING'} roomId=${roomId ?? 'none'}`,
+      );
+      if (!userId && !roomId) {
+        this.logger.warn(
+          `[categorizer] lexicon: нет userId и roomId — поиск по категориям в БД не выполняется (проверьте JWT на POST /categorizer/predict)`,
+        );
+      }
+      for (const term of terms) {
         const hit = await this.lookupLexiconForTerm(term, roomId, userId);
         if (hit) return hit;
       }
@@ -374,21 +467,36 @@ export class CategorizerService {
       roomId: context.roomId,
     });
 
+    this.logger.log(
+      `[categorizer] predict start normalized=${JSON.stringify(keyText)} model=${modelVersion} userId=${context.userId ? 'set' : 'MISSING'} roomId=${context.roomId ?? 'none'} key_suffix=${redisKey.split(':').slice(-2).join(':')}`,
+    );
+
     const cached = await this.predictionCache.getPrediction(redisKey);
     if (cached) {
       if (this.predictionCache.isBadQuality(cached)) {
+        this.logger.warn(`[categorizer] cache: bad quality — invalidate and recompute key=...${redisKey.slice(-24)}`);
         await this.predictionCache.deletePrediction(redisKey);
       } else if (this.predictionCache.isGoodQuality(cached)) {
+        this.logger.log(
+          `[categorizer] cache: HIT trusted id=${cached.prediction.primary?.category_id ?? 'none'} source=${cached.prediction.source}`,
+        );
         await this.predictionCache.touchPrediction(redisKey, CACHE_TTL_SEC);
         return { ...cached.prediction, predictionKey: redisKey };
+      } else {
+        this.logger.log(`[categorizer] cache: stale/neutral — recompute ML+lexicon`);
       }
+    } else {
+      this.logger.log(`[categorizer] cache: miss`);
     }
 
     try {
       let prediction = this.sanitizePrediction(await this.callMlPredict(text));
+      prediction = await this.clampPredictionToGroupRoom(prediction, context.roomId);
       prediction = await this.enrichUnknownWithLexicon(text, context, prediction);
       const outcome = prediction.primary.category_id ? 'known' : 'unknown';
-      this.logger.log(`categorizer.predict outcome=${outcome} source=${prediction.source}`);
+      this.logger.log(
+        `[categorizer] predict done outcome=${outcome} source=${prediction.source} id=${prediction.primary.category_id || '(empty)'} name=${prediction.primary.category_name} conf=${prediction.primary.confidence}`,
+      );
       const ttl = prediction.primary.category_id ? CACHE_TTL_SEC : CACHE_TTL_UNKNOWN_SEC;
       await this.predictionCache.setPrediction(redisKey, prediction, ttl);
       return { ...prediction, predictionKey: redisKey };

@@ -127,6 +127,23 @@ export class AnalyticsSnapshotsService {
     private readonly usersService: UsersService,
   ) {}
 
+  /**
+   * User-triggered save (header Export). Same payload shape as scheduled snapshots:
+   * period = current week/month/quarter per user analytics settings (default month).
+   */
+  async createSnapshotFromExport(userId: string): Promise<AnalyticsSnapshotDocument> {
+    const profile = await this.usersService.getProfile(userId);
+    let periodType: PeriodType = 'month';
+    const p = profile?.analytics_snapshot_periodicity;
+    if (p && ['week', 'month', 'quarter'].includes(p)) {
+      periodType = p as PeriodType;
+    }
+    const now = new Date();
+    const periodEnd = getPeriodEnd(periodType, now);
+    const periodStart = getPeriodStart(periodType, periodEnd);
+    return this.createSnapshot(userId, periodType, periodStart, periodEnd);
+  }
+
   async createSnapshot(
     userId: string,
     periodType: PeriodType,
@@ -137,6 +154,7 @@ export class AnalyticsSnapshotsService {
       monthsBar: 6,
       locale: 'en',
       userId,
+      piePeriod: 'last_6',
     });
     const year = new Date(periodEnd).getFullYear();
     const categoryLineCharts = await this.statisticsService.getCategoryExpenseLineChartsByYear({

@@ -1,6 +1,7 @@
 {
   "name": "backend",
   "version": "0.0.1",
+  "packageManager": "yarn@4.13.0",
   "description": "",
   "author": "",
   "private": true,

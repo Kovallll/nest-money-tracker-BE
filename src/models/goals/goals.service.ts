@@ -136,7 +136,7 @@ export class GoalsService implements OnModuleInit {
     if (!categoryId) return;
     const { rows } = await this.pool.query(
       `SELECT 1 FROM categories
-       WHERE id = $1 AND (group_room_id = $2 OR (user_id IS NULL AND group_room_id IS NULL))`,
+       WHERE id = $1 AND group_room_id = $2`,
       [categoryId, roomId],
     );
     if (!rows.length) {

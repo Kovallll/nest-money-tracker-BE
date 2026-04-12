@@ -6,6 +6,7 @@ import {
   Min,
   MaxLength,
   IsDateString,
+  IsBoolean,
 } from 'class-validator';
 
 export class UpdateTransactionDto {
@@ -52,6 +53,10 @@ export class UpdateTransactionDto {
   @IsString()
   @IsIn(['cash', 'card'])
   paymentMethod?: 'cash' | 'card';
+
+  @IsOptional()
+  @IsBoolean()
+  affectsCardBalance?: boolean;
 
   @IsOptional()
   @IsString()

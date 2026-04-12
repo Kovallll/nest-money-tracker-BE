@@ -1,4 +1,13 @@
-import { IsDateString, IsIn, IsNumber, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsDateString,
+  IsIn,
+  IsNumber,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 export class CreateGroupTransactionDto {
   @IsOptional()
@@ -14,6 +23,14 @@ export class CreateGroupTransactionDto {
   @IsNumber()
   @Min(1)
   cardId?: number;
+
+  @IsOptional()
+  @IsIn(['expense', 'revenue'])
+  type?: 'expense' | 'revenue';
+
+  @IsOptional()
+  @IsBoolean()
+  affectsCardBalance?: boolean;
 
   @IsNumber()
   @Min(0.01)
