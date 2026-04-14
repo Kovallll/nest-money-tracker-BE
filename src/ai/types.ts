@@ -50,8 +50,32 @@ export type RefineReceiptDraftInput = {
   sourceText: string;
 };
 
+export type DailyActivitySummaryInput = {
+  userId: string;
+  userName?: string;
+  timezone: string;
+  localDate: string;
+  yesterdayDate: string;
+  transactionsCount: number;
+  expensesCount: number;
+  expensesTotal: number;
+  revenuesCount: number;
+  revenuesTotal: number;
+  primaryCardName?: string;
+  primaryCardCurrency?: string;
+  primaryCardBalance?: number;
+};
+
+export type DailyActivitySummaryOutput = {
+  title: string;
+  body: string;
+};
+
 export interface AiProvider {
   parseReceipt(input: ParseReceiptInput): Promise<ParsedTransactionDraft>;
   applyEdit(input: EditDraftInput): Promise<ParsedTransactionDraft>;
   refineReceiptDraft(input: RefineReceiptDraftInput): Promise<ParsedTransactionDraft>;
+  generateDailyActivitySummary(
+    input: DailyActivitySummaryInput,
+  ): Promise<DailyActivitySummaryOutput>;
 }

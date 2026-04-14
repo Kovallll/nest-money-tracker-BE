@@ -27,6 +27,7 @@ export class PushController {
       userId,
       body.subscription,
       body.userAgent ?? '',
+      body.timezone ?? '',
     );
   }
 

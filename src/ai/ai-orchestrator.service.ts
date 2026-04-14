@@ -1,6 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
   AiProvider,
+  DailyActivitySummaryInput,
+  DailyActivitySummaryOutput,
   EditDraftInput,
   ParseReceiptInput,
   ParsedTransactionDraft,
@@ -24,5 +26,11 @@ export class AiOrchestratorService {
 
   refineReceiptDraft(input: RefineReceiptDraftInput): Promise<ParsedTransactionDraft> {
     return this.provider.refineReceiptDraft(input);
+  }
+
+  generateDailyActivitySummary(
+    input: DailyActivitySummaryInput,
+  ): Promise<DailyActivitySummaryOutput> {
+    return this.provider.generateDailyActivitySummary(input);
   }
 }

@@ -8,6 +8,8 @@ import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import {
   AiProvider,
+  DailyActivitySummaryInput,
+  DailyActivitySummaryOutput,
   EditDraftInput,
   ParseReceiptInput,
   ParsedTransactionDraft,
@@ -227,5 +229,30 @@ export class GeminiProvider implements AiProvider {
       fallbackCardId: input.currentTx.cardId,
       mergeFrom: input.currentTx,
     });
+  }
+
+  async generateDailyActivitySummary(
+    input: DailyActivitySummaryInput,
+  ): Promise<DailyActivitySummaryOutput> {
+    const prompt = [
+      'Сформируй короткое утреннее push-уведомление на русском языке.',
+      'Верни ТОЛЬКО JSON без markdown в формате {"title":string,"body":string}.',
+      'Ограничения:',
+      '- title до 60 символов',
+      '- body до 220 символов',
+      '- Тон дружелюбный, краткий, без эмодзи-спама',
+      '- Укажи активность за вчера и текущий баланс основной карты',
+      '- Если transactionsCount = 0, предложи добавить транзакции сегодня',
+      '- Добавь короткое пожелание хорошего дня',
+      'Данные пользователя:',
+      JSON.stringify(input),
+    ].join('\n');
+    const parsed = await this.callGemini(prompt);
+    const title = String(parsed.title || '').trim();
+    const body = String(parsed.body || '').trim();
+    if (!title || !body) {
+      throw new BadRequestException('Gemini не вернул title/body для daily summary');
+    }
+    return { title: title.slice(0, 60), body: body.slice(0, 220) };
   }
 }
