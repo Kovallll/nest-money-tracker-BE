@@ -684,17 +684,34 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
   }
 
   async generateLinkCode(userId: string): Promise<{ code: string; link: string }> {
-    await this.pool.query(`DELETE FROM link_codes WHERE user_id = $1 AND used_at IS NULL`, [
-      userId,
-    ]);
-
-    const code = randomBytes(16).toString('hex');
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 минут
-
     await this.pool.query(
-      `INSERT INTO link_codes (code, user_id, expires_at) VALUES ($1, $2, $3)`,
-      [code, userId, expiresAt],
+      `DELETE FROM link_codes WHERE user_id = $1 AND (used_at IS NOT NULL OR expires_at < NOW())`,
+      [userId],
     );
+
+    const existing = await this.pool.query(
+      `
+      SELECT code
+      FROM link_codes
+      WHERE user_id = $1
+        AND used_at IS NULL
+        AND expires_at >= NOW()
+      ORDER BY expires_at DESC
+      LIMIT 1
+      `,
+      [userId],
+    );
+
+    const code =
+      existing.rows.length > 0 ? String(existing.rows[0].code) : randomBytes(16).toString('hex');
+
+    if (existing.rows.length === 0) {
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 минут
+      await this.pool.query(
+        `INSERT INTO link_codes (code, user_id, expires_at) VALUES ($1, $2, $3)`,
+        [code, userId, expiresAt],
+      );
+    }
 
     if (!this.botUsername) {
       throw new ServiceUnavailableException(
