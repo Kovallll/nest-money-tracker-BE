@@ -5,7 +5,6 @@ import { firstValueFrom } from 'rxjs';
 import { retry, throwError, timer } from 'rxjs';
 import { AxiosError } from 'axios';
 import { PG_POOL } from '@/pg/pg.module';
-import { GROUP_ROOM_CATEGORY_NAMES } from '@/models/categories/seed';
 import { PredictionCacheService } from './prediction-cache.service';
 import { PredictionFeedbackService } from './prediction-feedback.service';
 
@@ -188,17 +187,15 @@ export class CategorizerService {
   }
 
   private async getGroupRoomAllowedCategoryIds(roomId: string): Promise<Set<string>> {
-    const allowed = [...GROUP_ROOM_CATEGORY_NAMES];
     const { rows } = await this.pool.query<{ id: string }>(
-      `SELECT id FROM categories
-       WHERE group_room_id = $1::uuid AND name = ANY($2::text[])`,
-      [roomId, allowed],
+      `SELECT id FROM categories WHERE group_room_id = $1::uuid`,
+      [roomId],
     );
     return new Set(rows.map((r) => r.id));
   }
 
   /**
-   * ML возвращает глобальные id категорий; для комнаты допустимы только Goals/Subscriptions этой комнаты.
+   * ML возвращает глобальные id категорий; для комнаты оставляем только категории с `group_room_id` этой комнаты.
    */
   private async clampPredictionToGroupRoom(
     prediction: Prediction,

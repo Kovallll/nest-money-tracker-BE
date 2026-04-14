@@ -1,7 +1,6 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { Pool } from 'pg';
 import { PG_POOL } from '@/pg/pg.module';
-import { GROUP_ROOM_CATEGORY_NAMES } from '@/models/categories/seed';
 import { CategoryLineChartDto, ExpensesOverviewDto, StatisticsPiePeriod } from '@/types';
 
 const PIE_PERIOD_VALUES: StatisticsPiePeriod[] = [
@@ -338,11 +337,9 @@ export class StatisticsService {
   private async fetchCategoriesMap(userId?: string, roomId?: string): Promise<Map<string, string>> {
     let rows: { id: string; name: string }[];
     if (roomId) {
-      const res = await this.pool.query(
-        `SELECT id, name FROM categories
-         WHERE group_room_id = $1 AND name = ANY($2::text[])`,
-        [roomId, [...GROUP_ROOM_CATEGORY_NAMES]],
-      );
+      const res = await this.pool.query(`SELECT id, name FROM categories WHERE group_room_id = $1`, [
+        roomId,
+      ]);
       rows = res.rows;
     } else {
       const sql = userId

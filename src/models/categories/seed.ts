@@ -4,10 +4,7 @@ import { v4 as uuid4 } from 'uuid';
 /** Глобальные шаблоны (user_id IS NULL), которые видит пользователь в личном кабинете до добавления своих категорий. */
 export const DEFAULT_USER_VISIBLE_BASE_CATEGORY_NAMES = ['Subscriptions', 'Goals'] as const;
 
-/**
- * Единственные категории групповой комнаты (цели и подписки).
- * Другие названия в `categories.group_room_id` не допускаются.
- */
+/** Имена категорий, которые автоматически создаются при первом открытии комнаты (остальные — по желанию участников). */
 export const GROUP_ROOM_CATEGORY_NAMES = ['Goals', 'Subscriptions'] as const;
 
 export const seedCategories = [

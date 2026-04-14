@@ -13,11 +13,7 @@ import { v4 as uuid4 } from 'uuid';
 import { PG_POOL } from '@/pg/pg.module';
 import { CategoryItem, CreateCategoryItem } from '@/types';
 import { Tabs } from '@/enums';
-import {
-  seedCategories,
-  DEFAULT_USER_VISIBLE_BASE_CATEGORY_NAMES,
-  GROUP_ROOM_CATEGORY_NAMES,
-} from './seed';
+import { seedCategories, DEFAULT_USER_VISIBLE_BASE_CATEGORY_NAMES } from './seed';
 import { CategorizerService } from '@/categorizer/categorizer.service';
 import { VALID_CATEGORY_ICONS, DEFAULT_CATEGORY_ICON } from './valid-icons.const';
 import { RoomMembershipService } from '@/common/room-membership.service';
@@ -327,10 +323,9 @@ export class CategoriesService implements OnModuleInit {
     );
   }
 
-  /** Только категории комнаты (Goals, Subscriptions); без глобальных шаблонов — иначе ИИ/телеграм видят лишние id. */
+  /** Все категории комнаты (`group_room_id`); глобальные шаблоны сюда не попадают. */
   async getCategoriesByRoomId(roomId: string): Promise<CategoryItem[]> {
     await this.ensureGroupRoomCategoryDefaults(roomId);
-    const allowed = [...GROUP_ROOM_CATEGORY_NAMES];
     const { rows: categories } = await this.pool.query(
       `SELECT 
         c.id,
@@ -343,10 +338,10 @@ export class CategoriesService implements OnModuleInit {
         COALESCE(SUM(CASE WHEN COALESCE(gt.type::text, 'expense') = 'revenue' THEN gt.amount ELSE 0 END), 0) as total_revenues
       FROM categories c
       LEFT JOIN group_transactions gt ON gt.category_id = c.id AND gt.room_id = $1
-      WHERE c.group_room_id = $1 AND c.name = ANY($2::text[])
+      WHERE c.group_room_id = $1
       GROUP BY c.id, c.name, c.icon, c.color, c.created_at, c.updated_at
       ORDER BY c.name`,
-      [roomId, allowed],
+      [roomId],
     );
 
     const { rows: gtx } = await this.pool.query(
@@ -394,13 +389,59 @@ export class CategoriesService implements OnModuleInit {
 
   async createCategoryForRoom(
     roomId: string,
-    _category: CreateCategoryItem,
+    category: CreateCategoryItem,
     actorId: string,
   ): Promise<CategoryItem> {
     await this.roomMembership.assertRoomMember(roomId, actorId);
-    throw new BadRequestException(
-      'В групповой комнате доступны только категории Goals и Subscriptions; создавать новые нельзя.',
+    await this.ensureGroupRoomCategoryDefaults(roomId);
+
+    const name = String(category.name ?? '').trim();
+    if (!name) {
+      throw new BadRequestException('Укажите название категории');
+    }
+
+    const id =
+      category.id && CategoriesService.UUID_REGEX.test(category.id) ? category.id : uuid4();
+
+    const exists = await this.pool.query(
+      'SELECT 1 FROM categories WHERE group_room_id = $1::uuid AND name = $2',
+      [roomId, name],
     );
+    if ((exists?.rowCount ?? 0) > 0) {
+      throw new ConflictException('В комнате уже есть категория с таким именем. Укажите другое.');
+    }
+
+    const { rows } = await this.pool.query(
+      `INSERT INTO categories (id, name, icon, color, user_id, group_room_id, updated_at)
+       VALUES ($1, $2, $3, $4, NULL, $5::uuid, NOW())
+       RETURNING id, name as title, icon, color, created_at, updated_at`,
+      [id, name, category.icon || 'category', category.color || '#CCCCCC', roomId],
+    );
+
+    if (category.examples && category.examples.length > 0) {
+      for (const example of category.examples) {
+        await this.pool.query(
+          `INSERT INTO examples (category_id, text, user_id) VALUES ($1::uuid, $2, NULL)`,
+          [id, example],
+        );
+      }
+    }
+
+    this.logger.log(`➕ Создана категория комнаты: ${name} (${id}) room=${roomId}`);
+    this.notifyML();
+
+    return {
+      id: rows[0].id,
+      title: rows[0].title,
+      icon: rows[0].icon,
+      color: rows[0].color,
+      createdAt: rows[0].created_at?.toISOString?.() ?? rows[0].created_at ?? undefined,
+      updatedAt: rows[0].updated_at?.toISOString?.() ?? rows[0].updated_at ?? undefined,
+      expenses: [],
+      revenues: [],
+      totalExpenses: 0,
+      totalRevenues: 0,
+    };
   }
 
   async getCategoryById(id: string): Promise<CategoryItem | null> {
@@ -579,8 +620,8 @@ export class CategoriesService implements OnModuleInit {
     if (reassignTo) {
       if (roomId) {
         const targetExists = await this.pool.query(
-          `SELECT 1 FROM categories WHERE id = $1 AND group_room_id = $2 AND name = ANY($3::text[])`,
-          [reassignTo, roomId, [...GROUP_ROOM_CATEGORY_NAMES]],
+          `SELECT 1 FROM categories WHERE id = $1 AND group_room_id = $2`,
+          [reassignTo, roomId],
         );
         if ((targetExists.rowCount ?? 0) === 0) {
           throw new NotFoundException(`Категория назначения ${reassignTo} не найдена`);
