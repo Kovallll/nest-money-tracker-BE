@@ -15,6 +15,7 @@ import {
   CreateGroupRoomDto,
   CreateGroupTransactionDto,
   UpdateGroupMemberRoleDto,
+  UpdateGroupRoomDto,
   UpdateGroupTransactionDto,
 } from './dto';
 import { GroupRoomsEventsService } from './group-rooms-events.service';
@@ -369,6 +370,70 @@ export class GroupRoomsService implements OnModuleInit {
     );
 
     return { ...roomRes.rows[0], members: membersRes.rows };
+  }
+
+  async updateRoom(roomId: string, userId: string, dto: UpdateGroupRoomDto) {
+    await this.ensureRole(this.pool, roomId, userId, 'admin');
+    const parts: string[] = [];
+    const values: unknown[] = [];
+    let i = 1;
+    if (dto.name !== undefined) {
+      const n = dto.name.trim();
+      if (!n) throw new BadRequestException('Имя комнаты не может быть пустым');
+      parts.push(`name = $${i++}`);
+      values.push(n);
+    }
+    if (dto.description !== undefined) {
+      parts.push(`description = $${i++}`);
+      values.push(dto.description?.trim() ? dto.description.trim() : null);
+    }
+    if (dto.avatar !== undefined) {
+      parts.push(`avatar = $${i++}`);
+      values.push(dto.avatar?.trim() ? dto.avatar.trim() : null);
+    }
+    if (!parts.length) {
+      throw new BadRequestException('Нет полей для обновления');
+    }
+    parts.push('updated_at = NOW()');
+    values.push(roomId);
+    const { rows } = await this.pool.query(
+      `UPDATE group_rooms SET ${parts.join(', ')}
+       WHERE id = $${i}
+       RETURNING
+         id,
+         name,
+         description,
+         avatar,
+         currency_code AS "currencyCode",
+         created_by AS "createdBy",
+         created_at AS "createdAt",
+         updated_at AS "updatedAt"`,
+      values,
+    );
+    const row = rows[0];
+    if (!row) throw new NotFoundException('Комната не найдена');
+    await this.appendActivity(this.pool, roomId, userId, 'room_updated', 'group_room', roomId, {
+      name: row.name,
+    });
+    await this.groupRoomsEvents.publishToRoom(roomId, {
+      type: 'room_updated',
+      roomId,
+      actorId: userId,
+      payload: { roomId },
+    });
+    return row;
+  }
+
+  async deleteRoom(roomId: string, userId: string) {
+    await this.ensureRole(this.pool, roomId, userId, 'owner');
+    await this.groupRoomsEvents.publishToRoom(roomId, {
+      type: 'room_deleted',
+      roomId,
+      actorId: userId,
+    });
+    const { rowCount } = await this.pool.query('DELETE FROM group_rooms WHERE id = $1', [roomId]);
+    if (!rowCount) throw new NotFoundException('Комната не найдена');
+    return { success: true };
   }
 
   async createInvite(roomId: string, userId: string, dto: CreateGroupInviteDto) {

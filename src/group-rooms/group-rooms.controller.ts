@@ -20,6 +20,7 @@ import {
   CreateGroupRoomDto,
   CreateGroupTransactionDto,
   UpdateGroupMemberRoleDto,
+  UpdateGroupRoomDto,
   UpdateGroupTransactionDto,
 } from './dto';
 import { GroupRoomsEventsService } from './group-rooms-events.service';
@@ -76,6 +77,20 @@ export class GroupRoomsController {
   @Get(':roomId')
   getRoomDetails(@Req() req: any, @Param('roomId') roomId: string) {
     return this.groupRoomsService.getRoomDetails(roomId, req.user.id);
+  }
+
+  @Patch(':roomId')
+  updateRoom(
+    @Req() req: any,
+    @Param('roomId') roomId: string,
+    @Body() dto: UpdateGroupRoomDto,
+  ) {
+    return this.groupRoomsService.updateRoom(roomId, req.user.id, dto);
+  }
+
+  @Delete(':roomId')
+  deleteRoom(@Req() req: any, @Param('roomId') roomId: string) {
+    return this.groupRoomsService.deleteRoom(roomId, req.user.id);
   }
 
   @Post(':roomId/invites')
