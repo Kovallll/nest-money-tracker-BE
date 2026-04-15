@@ -4,6 +4,8 @@ import {
   DailyActivitySummaryInput,
   DailyActivitySummaryOutput,
   EditDraftInput,
+  FinanceQuestionInput,
+  FinanceQuestionOutput,
   ParseReceiptInput,
   ParsedTransactionDraft,
   RefineReceiptDraftInput,
@@ -32,5 +34,9 @@ export class AiOrchestratorService {
     input: DailyActivitySummaryInput,
   ): Promise<DailyActivitySummaryOutput> {
     return this.provider.generateDailyActivitySummary(input);
+  }
+
+  answerFinanceQuestion(input: FinanceQuestionInput): Promise<FinanceQuestionOutput> {
+    return this.provider.answerFinanceQuestion(input);
   }
 }

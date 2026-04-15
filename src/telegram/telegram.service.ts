@@ -15,6 +15,7 @@ import { ReceiptOcrService } from '@/receipt-ocr/receipt-ocr.service';
 import { AiOrchestratorService } from '@/ai/ai-orchestrator.service';
 import { TransactionsService } from '@/models/transactions/transactions.service';
 import { CategoriesService } from '@/models/categories/categories.service';
+import { AiInsightsService } from '@/ai-insights/ai-insights.service';
 
 type UserContext = {
   userId: string;
@@ -61,6 +62,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     private readonly aiService: AiOrchestratorService,
     private readonly transactionsService: TransactionsService,
     private readonly categoriesService: CategoriesService,
+    private readonly aiInsightsService: AiInsightsService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -131,9 +133,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       const payload = ctx.payload; // часть после /start — "lk_<код>"
 
       if (!payload?.startsWith('lk_')) {
-        await ctx.reply(
-          '👋 Привет! Чтобы привязать аккаунт, получите ссылку в приложении Finance.',
-        );
+        await ctx.reply(this.buildHelpText(), {
+          reply_markup: this.buildMainMenuKeyboard(),
+        });
         return;
       }
 
@@ -144,7 +146,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         const result = await this.redeemCode(code, telegramUserId);
 
         if (result.success) {
-          await ctx.reply('✅ Аккаунт успешно привязан! Теперь вы будете получать уведомления.');
+          await ctx.reply('✅ Аккаунт успешно привязан! Теперь вы будете получать уведомления.', {
+            reply_markup: this.buildMainMenuKeyboard(),
+          });
         } else {
           await ctx.reply(`❌ ${result.error}`);
         }
@@ -224,6 +228,73 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         await ctx.reply('Отправьте текст или фото чека.');
         return;
       }
+      const lower = sourceText.toLowerCase();
+      const isCommand = lower.startsWith('/');
+      const normalizedText =
+        lower === '➕ добавить транзакцию'
+          ? '/add'
+          : lower === '🤖 спросить у ai'
+            ? '/ask'
+            : lower === '📊 инсайты'
+              ? '/insights'
+              : lower === '⚠️ риски'
+                ? '/risk'
+                : lower === 'ℹ️ помощь'
+                  ? '/help'
+                  : sourceText;
+
+      if (normalizedText === '/help' || normalizedText === '/start') {
+        await ctx.reply(this.buildHelpText(), {
+          reply_markup: this.buildMainMenuKeyboard(),
+        });
+        return;
+      }
+      if (normalizedText === '/insights') {
+        const insights = await this.aiInsightsService.getInsights(userCtx.userId, { status: 'active' });
+        if (!insights.length) {
+          await ctx.reply(
+            'Активных AI-инсайтов пока нет. Добавьте больше транзакций или выполните /recompute.',
+          );
+          return;
+        }
+        const text = [
+          'Ваши AI-инсайты:',
+          ...insights.slice(0, 5).map((x, i) => `${i + 1}. ${x.title}\n${x.message}`),
+        ].join('\n\n');
+        await ctx.reply(text);
+        return;
+      }
+      if (normalizedText === '/risk') {
+        const insights = await this.aiInsightsService.getInsights(userCtx.userId, { status: 'active' });
+        const high = insights.filter((x) => x.severity === 'high');
+        if (!high.length) {
+          await ctx.reply('Высокорисковых сигналов сейчас нет.');
+          return;
+        }
+        await ctx.reply(
+          ['Сигналы высокого риска:', ...high.slice(0, 3).map((x) => `- ${x.title}`)].join('\n'),
+        );
+        return;
+      }
+      if (normalizedText === '/recompute') {
+        const result = await this.aiInsightsService.recomputeUserInsights(userCtx.userId, 'telegram_manual');
+        await ctx.reply(`Пересчёт выполнен. Обновлено инсайтов: ${result.created}.`);
+        return;
+      }
+      if (normalizedText === '/ask') {
+        await ctx.reply('Напишите ваш вопрос о финансах следующим сообщением или используйте /ask <вопрос>.');
+        return;
+      }
+      if (normalizedText.startsWith('/ask ')) {
+        const question = normalizedText.replace('/ask', '').trim();
+        if (!question) {
+          await ctx.reply('Использование: /ask ваш вопрос');
+          return;
+        }
+        const answer = await this.aiInsightsService.ask(userCtx.userId, question, 'telegram');
+        await ctx.reply(answer.answer);
+        return;
+      }
 
       const editable = await this.getEditableDraft(userCtx.userId);
       if (editable) {
@@ -257,11 +328,65 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         await this.sendDraftPreview(chatId, userCtx, editable.draftId, updated);
         return;
       }
+      if (normalizedText === '/add') {
+        await ctx.reply(
+          'Введите текст транзакции следующим сообщением или сразу используйте /add <описание>. Пример: /add кофе 7 byn',
+        );
+        return;
+      }
+      if (normalizedText.startsWith('/add')) {
+        const textForDraft = sourceText.replace(/^\/add/i, '').trim();
+        if (!textForDraft) {
+          await ctx.reply(
+            'Использование: /add <описание транзакции>. Пример: /add кофе 7 byn или /add зарплата 2000 byn',
+          );
+          return;
+        }
+        await this.buildPreviewAndSend(chatId, userCtx, textForDraft, 'text');
+        return;
+      }
 
-      await this.buildPreviewAndSend(chatId, userCtx, sourceText, 'text');
+      if (isCommand) {
+        await ctx.reply(
+          'Неизвестная команда. Отправьте /help, чтобы увидеть список доступных команд.',
+        );
+        return;
+      }
+
+      // По умолчанию обычный текст = вопрос ассистенту.
+      const answer = await this.aiInsightsService.ask(userCtx.userId, sourceText, 'telegram');
+      await ctx.reply(answer.answer);
     } catch (error) {
       await this.replyPipelineError(ctx, error);
     }
+  }
+
+  private buildHelpText(): string {
+    return [
+      'Доступные команды:',
+      '/help — показать список команд',
+      '/ask <вопрос> — задать вопрос AI-ассистенту',
+      '/add <текст> — добавить транзакцию из текста',
+      '/insights — активные AI-инсайты',
+      '/risk — сигналы высокого риска',
+      '/recompute — пересчитать инсайты',
+      '',
+      'По умолчанию обычный текст без команды считается вопросом ассистенту.',
+    ].join('\n');
+  }
+
+  private buildMainMenuKeyboard(): {
+    keyboard: Array<Array<{ text: string }>>;
+    resize_keyboard: boolean;
+  } {
+    return {
+      keyboard: [
+        [{ text: '➕ Добавить транзакцию' }, { text: '🤖 Спросить у AI' }],
+        [{ text: '📊 Инсайты' }, { text: '⚠️ Риски' }],
+        [{ text: 'ℹ️ Помощь' }],
+      ],
+      resize_keyboard: true,
+    };
   }
 
   private async handleCallback(ctx: any): Promise<void> {

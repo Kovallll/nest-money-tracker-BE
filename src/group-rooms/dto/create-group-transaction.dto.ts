@@ -39,6 +39,11 @@ export class CreateGroupTransactionDto {
   @IsBoolean()
   affectsCardBalance?: boolean;
 
+  /** Наличные — без списания с личной карты (не применимо к type = transfer). */
+  @IsOptional()
+  @IsIn(['cash', 'card'])
+  paymentMethod?: 'cash' | 'card';
+
   @IsNumber()
   @Min(0.01)
   amount: number;

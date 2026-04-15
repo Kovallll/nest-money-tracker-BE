@@ -30,4 +30,20 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsBoolean()
   analytics_snapshots_enabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  ai_chat_enabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  ai_insights_enabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  market_signals_enabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  ai_beta_enabled?: boolean;
 }

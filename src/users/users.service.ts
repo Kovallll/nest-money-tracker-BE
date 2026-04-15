@@ -24,7 +24,8 @@ export class UsersService {
   async getProfile(userId: string) {
     const { rows } = await this.pool.query(
       `SELECT id, email, name, lastname, phone, avatar, created_at,
-              analytics_snapshot_periodicity, analytics_snapshots_enabled
+              analytics_snapshot_periodicity, analytics_snapshots_enabled,
+              ai_chat_enabled, ai_insights_enabled, market_signals_enabled, ai_beta_enabled
        FROM users WHERE id = $1`,
       [userId],
     );
@@ -89,6 +90,22 @@ export class UsersService {
       fields.push(`analytics_snapshots_enabled = $${idx++}`);
       values.push(Boolean(data.analytics_snapshots_enabled));
     }
+    if (data.ai_chat_enabled !== undefined) {
+      fields.push(`ai_chat_enabled = $${idx++}`);
+      values.push(Boolean(data.ai_chat_enabled));
+    }
+    if (data.ai_insights_enabled !== undefined) {
+      fields.push(`ai_insights_enabled = $${idx++}`);
+      values.push(Boolean(data.ai_insights_enabled));
+    }
+    if (data.market_signals_enabled !== undefined) {
+      fields.push(`market_signals_enabled = $${idx++}`);
+      values.push(Boolean(data.market_signals_enabled));
+    }
+    if (data.ai_beta_enabled !== undefined) {
+      fields.push(`ai_beta_enabled = $${idx++}`);
+      values.push(Boolean(data.ai_beta_enabled));
+    }
 
     if (fields.length === 0) {
       throw new BadRequestException(
@@ -101,7 +118,8 @@ export class UsersService {
     const { rows } = await this.pool.query(
       `UPDATE users SET ${fields.join(', ')}, updated_at = NOW() 
        WHERE id = $${idx} RETURNING id, email, name, lastname, phone, avatar,
-               analytics_snapshot_periodicity, analytics_snapshots_enabled`,
+               analytics_snapshot_periodicity, analytics_snapshots_enabled,
+               ai_chat_enabled, ai_insights_enabled, market_signals_enabled, ai_beta_enabled`,
       values,
     );
 

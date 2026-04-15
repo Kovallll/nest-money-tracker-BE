@@ -4,6 +4,7 @@ import { PG_POOL } from '@/pg/pg.module';
 import { Transaction, TransactionCreate } from '@/types';
 import { ExchangeRatesService } from '@/common/exchange-rates.service';
 import { PredictionFeedbackService } from '@/categorizer/prediction-feedback.service';
+import { AiInsightsService } from '@/ai-insights/ai-insights.service';
 import { seedTransactions } from './seed';
 
 interface CreateTransactionDto extends TransactionCreate {
@@ -26,6 +27,7 @@ export class TransactionsService implements OnModuleInit {
     @Inject(PG_POOL) private readonly pool: Pool,
     private readonly exchangeRates: ExchangeRatesService,
     private readonly predictionFeedback: PredictionFeedbackService,
+    private readonly aiInsights: AiInsightsService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -431,6 +433,11 @@ export class TransactionsService implements OnModuleInit {
         })
         .catch((err) => this.logger.warn('Prediction feedback failed:', (err as Error).message));
     }
+    this.aiInsights
+      .recomputeUserInsights(dto.userId, 'tx_create')
+      .catch((err) =>
+        this.logger.warn(`Ai insights recompute failed after create: ${(err as Error).message}`),
+      );
     return this.mapRow(rows[0]);
   }
 
@@ -623,6 +630,11 @@ export class TransactionsService implements OnModuleInit {
         })
         .catch((err) => this.logger.warn('Prediction feedback failed:', (err as Error).message));
     }
+    this.aiInsights
+      .recomputeUserInsights(dto.userId ?? existing.userId, 'tx_update')
+      .catch((err) =>
+        this.logger.warn(`Ai insights recompute failed after update: ${(err as Error).message}`),
+      );
     return this.mapRow(rows[0]);
   }
 
@@ -646,6 +658,13 @@ export class TransactionsService implements OnModuleInit {
         const revertDelta = -TransactionsService.balanceDelta(existing.type, existing.amount);
         await this.applyCardBalanceDelta(cardId, revertDelta, cur);
       }
+    }
+    if ((result.rowCount ?? 0) > 0) {
+      this.aiInsights
+        .recomputeUserInsights(existing.userId, 'tx_delete')
+        .catch((err) =>
+          this.logger.warn(`Ai insights recompute failed after delete: ${(err as Error).message}`),
+        );
     }
     return { success: (result.rowCount ?? 0) > 0 };
   }

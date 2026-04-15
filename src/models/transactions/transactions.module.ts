@@ -5,6 +5,7 @@ import { ExchangeRatesService } from '@/common/exchange-rates.service';
 import { TransactionsService } from './transactions.service';
 import { TransactionsController } from './transactions.controller';
 import { CategorizerModule } from '@/categorizer/categorizer.module';
+import { AiInsightsModule } from '@/ai-insights/ai-insights.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { CategorizerModule } from '@/categorizer/categorizer.module';
       maxRedirects: 5,
     }),
     CategorizerModule,
+    AiInsightsModule,
   ],
   providers: [TransactionsService, ExchangeRatesService],
   controllers: [TransactionsController, ExchangeRatesController],

@@ -11,6 +11,8 @@ import {
   DailyActivitySummaryInput,
   DailyActivitySummaryOutput,
   EditDraftInput,
+  FinanceQuestionInput,
+  FinanceQuestionOutput,
   ParseReceiptInput,
   ParsedTransactionDraft,
   RefineReceiptDraftInput,
@@ -296,5 +298,28 @@ export class GroqProvider implements AiProvider {
       throw new BadRequestException('Groq не вернул title/body для daily summary');
     }
     return { title: title.slice(0, 60), body: body.slice(0, 220) };
+  }
+
+  async answerFinanceQuestion(input: FinanceQuestionInput): Promise<FinanceQuestionOutput> {
+    const prompt = [
+      'Ты финансовый AI-ассистент. Отвечай только по финансовым темам: личные финансы, бюджет, долги, налоги, инвестиции, валюты, ставки, инфляция, макроэкономика.',
+      'Если вопрос НЕ финансовый, верни краткий отказ и isFinanceTopic=false.',
+      'Никогда не выдумывай персональные данные; используй только userContext.',
+      'Считай, что userContext содержит полный срез данных пользователя (карты, категории, транзакции, подписки, цели). Используй его максимально полно.',
+      'Дай практичный ответ на русском языке, 3-8 предложений.',
+      'Для инвестиционных тем добавь дисклеймер в поле disclaimer.',
+      'Верни только JSON: {"answer":string,"isFinanceTopic":boolean,"confidence":number,"disclaimer"?:string}',
+      'Данные:',
+      JSON.stringify(input),
+    ].join('\n');
+    const parsed = await this.callGroq(prompt);
+    const answer = String(parsed.answer || '').trim();
+    if (!answer) throw new BadRequestException('Groq не вернул answer для finance question');
+    return {
+      answer,
+      isFinanceTopic: parsed.isFinanceTopic !== false,
+      confidence: Math.max(0, Math.min(1, Number(parsed.confidence ?? 0.75))),
+      disclaimer: parsed.disclaimer ? String(parsed.disclaimer) : undefined,
+    };
   }
 }

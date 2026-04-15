@@ -23,6 +23,7 @@ import { RedisModule } from './redis/redis.module';
 import { ReceiptOcrModule } from './receipt-ocr/receipt-ocr.module';
 import { GroupRoomsModule } from './group-rooms/group-rooms.module';
 import { CommonModule } from './common/common.module';
+import { AiInsightsModule } from './ai-insights/ai-insights.module';
 
 @Module({
   controllers: [AppController, HealthController],
@@ -48,6 +49,7 @@ import { CommonModule } from './common/common.module';
     AnalyticsSnapshotsModule,
     ReceiptOcrModule,
     GroupRoomsModule,
+    AiInsightsModule,
   ],
 })
 export class AppModule {}

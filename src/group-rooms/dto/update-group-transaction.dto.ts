@@ -60,4 +60,8 @@ export class UpdateGroupTransactionDto {
   @IsOptional()
   @IsBoolean()
   affectsCardBalance?: boolean;
+
+  @IsOptional()
+  @IsIn(['cash', 'card'])
+  paymentMethod?: 'cash' | 'card';
 }

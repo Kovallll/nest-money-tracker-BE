@@ -5,9 +5,10 @@ import { ReceiptOcrModule } from '@/receipt-ocr/receipt-ocr.module';
 import { TransactionsModule } from '@/models/transactions/transactions.module';
 import { CategoriesModule } from '@/models/categories/categories.module';
 import { AiModule } from '@/ai/ai.module';
+import { AiInsightsModule } from '@/ai-insights/ai-insights.module';
 
 @Module({
-  imports: [ReceiptOcrModule, TransactionsModule, CategoriesModule, AiModule],
+  imports: [ReceiptOcrModule, TransactionsModule, CategoriesModule, AiModule, AiInsightsModule],
   providers: [TelegramService],
   controllers: [TelegramController],
   exports: [TelegramService],

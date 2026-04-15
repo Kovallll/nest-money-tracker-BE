@@ -74,6 +74,73 @@ export type DailyActivitySummaryOutput = {
   body: string;
 };
 
+export type FinanceQuestionInput = {
+  question: string;
+  userContext: {
+    userId: string;
+    monthExpenses: number;
+    monthRevenues: number;
+    cards?: Array<{
+      id: number;
+      cardName: string;
+      cardBalance: number;
+      currencyCode: string;
+      isPrimary: boolean;
+    }>;
+    categories?: Array<{
+      id: string;
+      name: string;
+      monthExpenseTotal: number;
+      monthTransactionsCount: number;
+    }>;
+    recentTransactions?: Array<{
+      id: number;
+      type: string;
+      amount: number;
+      currencyCode: string;
+      title: string;
+      date: string;
+      categoryName: string;
+    }>;
+    goals?: Array<{
+      id: string;
+      title: string;
+      targetBudget: number;
+      goalBudget: number;
+      currencyCode: string;
+      status: string;
+    }>;
+    subscriptions?: Array<{
+      id: string;
+      subscribeName: string;
+      amount: number;
+      currencyCode: string;
+      subscribeDate: string;
+      isActive: boolean;
+    }>;
+    topExpenseCategories?: Array<{
+      categoryId: string | null;
+      category: string;
+      total: number;
+    }>;
+    activeInsights: Array<{
+      type: string;
+      title: string;
+      message: string;
+      severity: string;
+      confidence: number;
+    }>;
+    ratesToByn?: Record<string, number>;
+  };
+};
+
+export type FinanceQuestionOutput = {
+  answer: string;
+  isFinanceTopic: boolean;
+  confidence: number;
+  disclaimer?: string;
+};
+
 export interface AiProvider {
   parseReceipt(input: ParseReceiptInput): Promise<ParsedTransactionDraft>;
   applyEdit(input: EditDraftInput): Promise<ParsedTransactionDraft>;
@@ -81,4 +148,5 @@ export interface AiProvider {
   generateDailyActivitySummary(
     input: DailyActivitySummaryInput,
   ): Promise<DailyActivitySummaryOutput>;
+  answerFinanceQuestion(input: FinanceQuestionInput): Promise<FinanceQuestionOutput>;
 }

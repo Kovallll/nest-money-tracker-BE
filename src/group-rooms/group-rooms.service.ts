@@ -57,6 +57,7 @@ export class GroupRoomsService implements OnModuleInit {
     await this.ensureGroupTxCardIdColumn();
     await this.ensureGroupTxTypeColumn();
     await this.ensureGroupTxAffectsCardBalanceColumn();
+    await this.ensureGroupTxPaymentMethodColumn();
   }
 
   private async queryGroupTxCardIdExists(): Promise<boolean> {
@@ -236,6 +237,35 @@ export class GroupRoomsService implements OnModuleInit {
     if (await this.queryGroupTxTransferToExists()) return true;
     await this.tryAddGroupTxTransferToColumn();
     return this.queryGroupTxTransferToExists();
+  }
+
+  private async queryGroupTxPaymentMethodExists(): Promise<boolean> {
+    const { rows } = await this.pool.query(
+      `SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'group_transactions'
+         AND column_name = 'payment_method'
+       LIMIT 1`,
+    );
+    return rows.length > 0;
+  }
+
+  private async tryAddGroupTxPaymentMethodColumn(): Promise<void> {
+    try {
+      await this.pool.query(
+        `ALTER TABLE group_transactions
+         ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20)`,
+      );
+    } catch (err) {
+      this.logger.warn(`group_transactions ADD payment_method: ${(err as Error).message}`);
+    }
+  }
+
+  /** Колонка payment_method (cash | card) для групповых транзакций. */
+  private async ensureGroupTxPaymentMethodColumn(): Promise<boolean> {
+    if (await this.queryGroupTxPaymentMethodExists()) return true;
+    await this.tryAddGroupTxPaymentMethodColumn();
+    return this.queryGroupTxPaymentMethodExists();
   }
 
   private roleWeight(role: GroupRole): number {
@@ -622,6 +652,7 @@ export class GroupRoomsService implements OnModuleInit {
     const hasTypeCol = await this.ensureGroupTxTypeColumn();
     const hasAffectsCol = await this.ensureGroupTxAffectsCardBalanceColumn();
     const hasTransferToCol = await this.ensureGroupTxTransferToCardColumn();
+    const hasPaymentCol = await this.ensureGroupTxPaymentMethodColumn();
     const cardIdSelect = hasCardCol ? 'gt.card_id AS "cardId"' : 'NULL::integer AS "cardId"';
     const transferToSelect = hasTransferToCol
       ? 'gt.transfer_to_card_id AS "transferToCardId"'
@@ -632,6 +663,9 @@ export class GroupRoomsService implements OnModuleInit {
     const affectsSelect = hasAffectsCol
       ? 'COALESCE(gt.affects_card_balance, TRUE) AS "affectsCardBalance"'
       : 'TRUE AS "affectsCardBalance"';
+    const paymentSelect = hasPaymentCol
+      ? `COALESCE(NULLIF(TRIM(gt.payment_method::text), ''), 'card') AS "paymentMethod"`
+      : `'card' AS "paymentMethod"`;
     const displayName = (alias: string) => `COALESCE(
            NULLIF(
              TRIM(
@@ -658,6 +692,7 @@ export class GroupRoomsService implements OnModuleInit {
          ${transferToSelect},
          ${typeSelect},
          ${affectsSelect},
+         ${paymentSelect},
          gt.amount::float8 AS amount,
          gt.currency_code AS "currencyCode",
          gt.title,
@@ -779,6 +814,7 @@ export class GroupRoomsService implements OnModuleInit {
     const hasTypeCol = await this.ensureGroupTxTypeColumn();
     const hasAffectsCol = await this.ensureGroupTxAffectsCardBalanceColumn();
     const hasTransferToCol = await this.ensureGroupTxTransferToCardColumn();
+    const hasPaymentCol = await this.ensureGroupTxPaymentMethodColumn();
     const txType: 'expense' | 'revenue' | 'transfer' =
       dto.type === 'revenue' ? 'revenue' : dto.type === 'transfer' ? 'transfer' : 'expense';
     const affectBalance = dto.affectsCardBalance !== false;
@@ -787,9 +823,14 @@ export class GroupRoomsService implements OnModuleInit {
     if (!paidByRole) {
       throw new BadRequestException('paidBy должен быть участником комнаты');
     }
+    const paymentMethod: 'cash' | 'card' =
+      dto.paymentMethod === 'cash' && txType !== 'transfer' ? 'cash' : 'card';
     let cardId =
       dto.cardId != null && Number.isFinite(Number(dto.cardId)) ? Math.trunc(Number(dto.cardId)) : null;
     if (!hasCardCol) {
+      cardId = null;
+    }
+    if (txType !== 'transfer' && paymentMethod === 'cash') {
       cardId = null;
     }
     let transferToCardId: number | null =
@@ -834,6 +875,10 @@ export class GroupRoomsService implements OnModuleInit {
       cols.push('affects_card_balance');
       vals.push(affectBalance);
     }
+    if (hasPaymentCol) {
+      cols.push('payment_method');
+      vals.push(paymentMethod);
+    }
 
     const placeholders = vals.map((_, i) => `$${i + 1}`).join(', ');
     const cardIdReturning = hasCardCol
@@ -844,6 +889,9 @@ export class GroupRoomsService implements OnModuleInit {
     const affectsReturning = hasAffectsCol
       ? 'affects_card_balance AS "affectsCardBalance",'
       : 'TRUE AS "affectsCardBalance",';
+    const paymentReturning = hasPaymentCol
+      ? `COALESCE(NULLIF(TRIM(payment_method::text), ''), 'card') AS "paymentMethod",`
+      : `'card' AS "paymentMethod",`;
     const returningSql = `
        RETURNING
          id,
@@ -861,6 +909,7 @@ export class GroupRoomsService implements OnModuleInit {
          is_split AS "isSplit",
          ${typeReturning}
          ${affectsReturning}
+         ${paymentReturning}
          created_at AS "createdAt",
          updated_at AS "updatedAt"`;
 
@@ -872,7 +921,11 @@ export class GroupRoomsService implements OnModuleInit {
     );
 
     const created = rows[0] as { id: string };
-    const shouldApplyCard = cardId != null && (hasAffectsCol ? affectBalance : true);
+    const balanceUsesCard =
+      txType === 'transfer' || paymentMethod !== 'cash'
+        ? cardId != null
+        : false;
+    const shouldApplyCard = balanceUsesCard && (hasAffectsCol ? affectBalance : true);
     if (shouldApplyCard && cardId != null && txType === 'transfer' && transferToCardId != null) {
       try {
         await this.transactionsService.applyTransferBetweenCards(
@@ -927,6 +980,7 @@ export class GroupRoomsService implements OnModuleInit {
     const hasTypeCol = await this.ensureGroupTxTypeColumn();
     const hasAffectsCol = await this.ensureGroupTxAffectsCardBalanceColumn();
     const hasTransferToCol = await this.ensureGroupTxTransferToCardColumn();
+    const hasPaymentCol = await this.ensureGroupTxPaymentMethodColumn();
     const role = await this.ensureRole(this.pool, roomId, userId, 'member');
 
     const cardSel = hasCardCol ? 'gt.card_id' : 'NULL::integer AS card_id';
@@ -937,6 +991,9 @@ export class GroupRoomsService implements OnModuleInit {
     const affectsSel = hasAffectsCol
       ? 'COALESCE(gt.affects_card_balance, TRUE) AS affects_card_balance'
       : 'TRUE AS affects_card_balance';
+    const paymentSel = hasPaymentCol
+      ? `COALESCE(NULLIF(TRIM(gt.payment_method::text), ''), 'card') AS payment_method`
+      : `'card'::text AS payment_method`;
 
     const existingRes = await this.pool.query<{
       created_by: string | null;
@@ -948,12 +1005,13 @@ export class GroupRoomsService implements OnModuleInit {
       currency_code: string;
       type: string;
       affects_card_balance: boolean;
+      payment_method: string;
       title: string;
       description: string | null;
       date: string;
     }>(
       `SELECT gt.created_by, gt.paid_by, ${cardSel} AS card_id, ${transferSel} AS transfer_to_card_id,
-              gt.category_id, gt.amount, gt.currency_code, ${typeSel}, ${affectsSel},
+              gt.category_id, gt.amount, gt.currency_code, ${typeSel}, ${affectsSel}, ${paymentSel},
               gt.title, gt.description, gt.date::text AS date
        FROM group_transactions gt
        WHERE gt.id = $1::uuid AND gt.room_id = $2::uuid
@@ -1008,6 +1066,20 @@ export class GroupRoomsService implements OnModuleInit {
       }
     }
 
+    const existingPaymentRaw = String(ex.payment_method || 'card').toLowerCase();
+    const existingPayment: 'cash' | 'card' = existingPaymentRaw === 'cash' ? 'cash' : 'card';
+    let nextPaymentMethod: 'cash' | 'card' =
+      nextType === 'transfer'
+        ? 'card'
+        : dto.paymentMethod === 'cash'
+          ? 'cash'
+          : dto.paymentMethod === 'card'
+            ? 'card'
+            : existingPayment;
+    if (nextType !== 'transfer' && nextPaymentMethod === 'cash') {
+      nextCardId = null;
+    }
+
     const nextCategoryId =
       dto.categoryId !== undefined ? dto.categoryId : ex.category_id;
     const nextAmount = dto.amount ?? parseFloat(String(ex.amount));
@@ -1042,6 +1114,7 @@ export class GroupRoomsService implements OnModuleInit {
     const oldAffects = ex.affects_card_balance !== false;
     const oldAmount = parseFloat(String(ex.amount));
     const oldCur = ex.currency_code ?? 'BYN';
+    const oldPaymentMethod: 'cash' | 'card' = existingPayment;
 
     if (oldAffects && oldPayer) {
       if (
@@ -1056,7 +1129,11 @@ export class GroupRoomsService implements OnModuleInit {
           oldCur,
           -1,
         );
-      } else if (ex.card_id != null && existingType !== 'transfer') {
+      } else if (
+        ex.card_id != null &&
+        existingType !== 'transfer' &&
+        oldPaymentMethod !== 'cash'
+      ) {
         await this.transactionsService.reversePersonalCardForGroupTx(
           oldPayer,
           Number(ex.card_id),
@@ -1095,6 +1172,10 @@ export class GroupRoomsService implements OnModuleInit {
       setSql += `, transfer_to_card_id = $${p++}`;
       params.push(nextType === 'transfer' ? nextTransferTo : null);
     }
+    if (hasPaymentCol) {
+      setSql += `, payment_method = $${p++}`;
+      params.push(nextPaymentMethod);
+    }
     setSql += ', updated_at = NOW()';
     const idSlot = p;
     const roomSlot = p + 1;
@@ -1110,6 +1191,9 @@ export class GroupRoomsService implements OnModuleInit {
     const affectsReturning = hasAffectsCol
       ? 'affects_card_balance AS "affectsCardBalance",'
       : 'TRUE AS "affectsCardBalance",';
+    const paymentReturning = hasPaymentCol
+      ? `COALESCE(NULLIF(TRIM(payment_method::text), ''), 'card') AS "paymentMethod",`
+      : `'card' AS "paymentMethod",`;
 
     const { rows } = await this.pool.query(
       `UPDATE group_transactions
@@ -1131,12 +1215,15 @@ export class GroupRoomsService implements OnModuleInit {
          is_split AS "isSplit",
          ${typeReturning}
          ${affectsReturning}
+         ${paymentReturning}
          created_at AS "createdAt",
          updated_at AS "updatedAt"`,
       params,
     );
 
-    const shouldApplyCard = nextCardId != null && (hasAffectsCol ? nextAffects : true);
+    const balanceUsesCard =
+      nextType === 'transfer' || nextPaymentMethod !== 'cash' ? nextCardId != null : false;
+    const shouldApplyCard = balanceUsesCard && (hasAffectsCol ? nextAffects : true);
     if (
       shouldApplyCard &&
       nextPaidBy &&
@@ -1189,7 +1276,11 @@ export class GroupRoomsService implements OnModuleInit {
       ? 'COALESCE(affects_card_balance, TRUE) AS affects_card_balance'
       : 'TRUE AS affects_card_balance';
     const hasTransferToCol = await this.ensureGroupTxTransferToCardColumn();
+    const hasPaymentCol = await this.ensureGroupTxPaymentMethodColumn();
     const transferSel = hasTransferToCol ? 'transfer_to_card_id' : 'NULL::integer AS transfer_to_card_id';
+    const paymentSel = hasPaymentCol
+      ? `COALESCE(NULLIF(TRIM(payment_method::text), ''), 'card') AS payment_method`
+      : `'card'::text AS payment_method`;
     const existingRes = await this.pool.query<{
       created_by: string | null;
       paid_by: string | null;
@@ -1199,8 +1290,9 @@ export class GroupRoomsService implements OnModuleInit {
       currency_code: string;
       type: string;
       affects_card_balance: boolean;
+      payment_method: string;
     }>(
-      `SELECT created_by, paid_by, ${cardSel}, ${transferSel}, amount, currency_code, ${typeSel}, ${affectsSel}
+      `SELECT created_by, paid_by, ${cardSel}, ${transferSel}, amount, currency_code, ${typeSel}, ${affectsSel}, ${paymentSel}
        FROM group_transactions
        WHERE id = $1 AND room_id = $2
        LIMIT 1`,
@@ -1214,6 +1306,8 @@ export class GroupRoomsService implements OnModuleInit {
     if (existing.affects_card_balance && existing.paid_by) {
       const txType: 'expense' | 'revenue' | 'transfer' =
         existing.type === 'revenue' ? 'revenue' : existing.type === 'transfer' ? 'transfer' : 'expense';
+      const delPayment: 'cash' | 'card' =
+        String(existing.payment_method || 'card').toLowerCase() === 'cash' ? 'cash' : 'card';
       if (
         txType === 'transfer' &&
         existing.card_id != null &&
@@ -1226,7 +1320,7 @@ export class GroupRoomsService implements OnModuleInit {
           existing.currency_code ?? 'BYN',
           -1,
         );
-      } else if (existing.card_id != null && txType !== 'transfer') {
+      } else if (existing.card_id != null && txType !== 'transfer' && delPayment !== 'cash') {
         await this.transactionsService.reversePersonalCardForGroupTx(
           existing.paid_by,
           Number(existing.card_id),
