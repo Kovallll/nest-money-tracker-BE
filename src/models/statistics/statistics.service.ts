@@ -79,7 +79,7 @@ export class StatisticsService {
       new Date(year, m, 1).toLocaleString(locale, { month: 'short' }),
     );
 
-    const transactions = await this.fetchExpenseTransactions(year, lastMonthIndex, userId, roomId);
+    const transactions = await this.fetchNetTransactions(year, lastMonthIndex, userId, roomId);
     const categories = await this.fetchCategoriesMap(userId, roomId);
 
     const byCategory = this.groupExpensesByCategoryAndMonth(transactions, year, lastMonthIndex);
@@ -93,7 +93,7 @@ export class StatisticsService {
         labels,
         datasets: [
           {
-            label: 'Expenses',
+            label: 'Net Expenses',
             data: monthly.map((v) => +v.toFixed(2)),
             borderColor: this.palette[charts.length % this.palette.length],
             backgroundColor: 'transparent',
@@ -230,7 +230,7 @@ export class StatisticsService {
         labels: lineLabels,
         datasets: [
           {
-            label: 'Total Expenses',
+            label: 'Net Total',
             data: lineData,
             borderColor: '#4F46E5',
             tension: 0.35,
@@ -262,10 +262,13 @@ export class StatisticsService {
         amount: string;
         currency_code: string | null;
       }>(
-        `SELECT gt.category_id, gt.date, gt.amount::text AS amount,
+        `SELECT gt.category_id, gt.date,
+                (CASE WHEN COALESCE(gt.type::text, 'expense') = 'revenue'
+                      THEN -gt.amount ELSE gt.amount END)::text AS amount,
                 COALESCE(NULLIF(TRIM(gt.currency_code::text), ''), 'BYN') AS currency_code
          FROM group_transactions gt
-         WHERE gt.room_id = $1::uuid AND COALESCE(gt.type::text, 'expense') = 'expense'`,
+         WHERE gt.room_id = $1::uuid
+           AND COALESCE(gt.type::text, 'expense') IN ('expense', 'revenue')`,
         [roomId],
       );
       return rows.map((r) => ({
@@ -275,8 +278,14 @@ export class StatisticsService {
       }));
     }
     const sql = userId
-      ? `SELECT category_id, date, amount FROM transactions WHERE type = 'expense' AND user_id = $1`
-      : `SELECT category_id, date, amount FROM transactions WHERE type = 'expense'`;
+      ? `SELECT category_id, date,
+                (CASE WHEN type = 'revenue' THEN -amount ELSE amount END) AS amount
+         FROM transactions
+         WHERE type IN ('expense', 'revenue') AND user_id = $1`
+      : `SELECT category_id, date,
+                (CASE WHEN type = 'revenue' THEN -amount ELSE amount END) AS amount
+         FROM transactions
+         WHERE type IN ('expense', 'revenue')`;
     const params = userId ? [userId] : [];
     const { rows } = await this.pool.query(sql, params);
     return rows.map((r) => ({
@@ -286,7 +295,7 @@ export class StatisticsService {
     }));
   }
 
-  private async fetchExpenseTransactions(
+  private async fetchNetTransactions(
     year: number,
     lastMonthIndex: number,
     userId?: string,
@@ -301,11 +310,13 @@ export class StatisticsService {
         amount: string;
         currency_code: string | null;
       }>(
-        `SELECT gt.category_id, gt.date, gt.amount::text AS amount,
+        `SELECT gt.category_id, gt.date,
+                (CASE WHEN COALESCE(gt.type::text, 'expense') = 'revenue'
+                      THEN -gt.amount ELSE gt.amount END)::text AS amount,
                 COALESCE(NULLIF(TRIM(gt.currency_code::text), ''), 'BYN') AS currency_code
          FROM group_transactions gt
          WHERE gt.room_id = $1::uuid AND gt.date >= $2 AND gt.date <= $3
-           AND COALESCE(gt.type::text, 'expense') = 'expense'`,
+           AND COALESCE(gt.type::text, 'expense') IN ('expense', 'revenue')`,
         [roomId, start, end],
       );
       return rows.map((r) => ({
@@ -315,10 +326,14 @@ export class StatisticsService {
       }));
     }
     const sql = userId
-      ? `SELECT category_id, date, amount FROM transactions
-         WHERE type = 'expense' AND user_id = $1 AND date >= $2 AND date <= $3`
-      : `SELECT category_id, date, amount FROM transactions
-         WHERE type = 'expense' AND date >= $1 AND date <= $2`;
+      ? `SELECT category_id, date,
+                (CASE WHEN type = 'revenue' THEN -amount ELSE amount END) AS amount
+         FROM transactions
+         WHERE type IN ('expense', 'revenue') AND user_id = $1 AND date >= $2 AND date <= $3`
+      : `SELECT category_id, date,
+                (CASE WHEN type = 'revenue' THEN -amount ELSE amount END) AS amount
+         FROM transactions
+         WHERE type IN ('expense', 'revenue') AND date >= $1 AND date <= $2`;
     const params = userId ? [userId, start, end] : [start, end];
     const { rows } = await this.pool.query(sql, params);
     return rows.map((r) => ({
@@ -342,11 +357,13 @@ export class StatisticsService {
         amount: string;
         currency_code: string | null;
       }>(
-        `SELECT gt.category_id, gt.date, gt.amount::text AS amount,
+        `SELECT gt.category_id, gt.date,
+                (CASE WHEN COALESCE(gt.type::text, 'expense') = 'revenue'
+                      THEN -gt.amount ELSE gt.amount END)::text AS amount,
                 COALESCE(NULLIF(TRIM(gt.currency_code::text), ''), 'BYN') AS currency_code
          FROM group_transactions gt
          WHERE gt.room_id = $1::uuid AND gt.date >= $2 AND gt.date <= $3
-           AND COALESCE(gt.type::text, 'expense') = 'expense'`,
+           AND COALESCE(gt.type::text, 'expense') IN ('expense', 'revenue')`,
         [roomId, start, end],
       );
       return rows.map((r) => ({
@@ -356,10 +373,14 @@ export class StatisticsService {
       }));
     }
     const sql = userId
-      ? `SELECT category_id, date, amount FROM transactions
-         WHERE type = 'expense' AND user_id = $1 AND date >= $2 AND date <= $3`
-      : `SELECT category_id, date, amount FROM transactions
-         WHERE type = 'expense' AND date >= $1 AND date <= $2`;
+      ? `SELECT category_id, date,
+                (CASE WHEN type = 'revenue' THEN -amount ELSE amount END) AS amount
+         FROM transactions
+         WHERE type IN ('expense', 'revenue') AND user_id = $1 AND date >= $2 AND date <= $3`
+      : `SELECT category_id, date,
+                (CASE WHEN type = 'revenue' THEN -amount ELSE amount END) AS amount
+         FROM transactions
+         WHERE type IN ('expense', 'revenue') AND date >= $1 AND date <= $2`;
     const params = userId ? [userId, start, end] : [start, end];
     const { rows } = await this.pool.query(sql, params);
     return rows.map((r) => ({
