@@ -7,6 +7,7 @@ import {
   MaxLength,
   IsDateString,
   IsBoolean,
+  ValidateIf,
 } from 'class-validator';
 
 export class CreateTransactionDto {
@@ -16,11 +17,18 @@ export class CreateTransactionDto {
   @IsString()
   cardId: string;
 
+  @ValidateIf((o: CreateTransactionDto) => o.type !== 'transfer')
   @IsString()
-  categoryId: string;
+  categoryId?: string;
 
-  @IsIn(['expense', 'revenue'], { message: 'type должен быть expense или revenue' })
-  type: 'expense' | 'revenue';
+  @ValidateIf((o: CreateTransactionDto) => o.type === 'transfer')
+  @IsString()
+  transferToCardId: string;
+
+  @IsIn(['expense', 'revenue', 'transfer'], {
+    message: 'type должен быть expense, revenue или transfer',
+  })
+  type: 'expense' | 'revenue' | 'transfer';
 
   @IsNumber()
   @Min(0.01, { message: 'Сумма должна быть больше 0' })

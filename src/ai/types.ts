@@ -26,8 +26,11 @@ export type ParseReceiptInput = {
 export type ParsedTransactionDraft = {
   userId: string;
   cardId: number;
-  categoryId: string;
-  type: 'expense' | 'revenue';
+  /** Для expense/revenue; для transfer можно не задавать. */
+  categoryId?: string;
+  type: 'expense' | 'revenue' | 'transfer';
+  /** Вторая карта при type = transfer (зачисление). */
+  transferToCardId?: number;
   amount: number;
   title: string;
   description?: string;

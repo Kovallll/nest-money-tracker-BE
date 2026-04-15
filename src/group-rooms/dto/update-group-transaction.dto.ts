@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsDateString,
   IsIn,
   IsNumber,
@@ -39,4 +40,24 @@ export class UpdateGroupTransactionDto {
   @IsOptional()
   @IsDateString()
   date?: string;
+
+  @IsOptional()
+  @IsIn(['expense', 'revenue', 'transfer'])
+  type?: 'expense' | 'revenue' | 'transfer';
+
+  /** Личная карта плательщика (при наличии колонки в БД). */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  cardId?: number;
+
+  /** При type = transfer — карта зачисления. */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  transferToCardId?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  affectsCardBalance?: boolean;
 }

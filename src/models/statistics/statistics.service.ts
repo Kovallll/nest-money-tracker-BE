@@ -1,6 +1,7 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { Pool } from 'pg';
 import { PG_POOL } from '@/pg/pg.module';
+import { ExchangeRatesService } from '@/common/exchange-rates.service';
 import { CategoryLineChartDto, ExpensesOverviewDto, StatisticsPiePeriod } from '@/types';
 
 const PIE_PERIOD_VALUES: StatisticsPiePeriod[] = [
@@ -41,7 +42,20 @@ export class StatisticsService {
     '#F97316',
   ];
 
-  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
+  constructor(
+    @Inject(PG_POOL) private readonly pool: Pool,
+    private readonly exchangeRates: ExchangeRatesService,
+  ) {}
+
+  /** Сумма групповой траты в BYN (как на фронте у «Paid by member»). */
+  private groupAmountToByn(amountStr: string, currencyCode: string | null | undefined): number {
+    const raw = parseFloat(amountStr);
+    if (!Number.isFinite(raw)) return 0;
+    const from = String(currencyCode ?? 'BYN')
+      .trim()
+      .toUpperCase() || 'BYN';
+    return this.exchangeRates.convert(raw, from, 'BYN');
+  }
 
   async getCategoryExpenseLineChartsByYear(params?: {
     year?: number;
@@ -242,15 +256,22 @@ export class StatisticsService {
     roomId?: string,
   ): Promise<TxRow[]> {
     if (roomId) {
-      const { rows } = await this.pool.query(
-        `SELECT category_id, date, amount::text AS amount FROM group_transactions
-         WHERE room_id = $1 AND COALESCE(type::text, 'expense') = 'expense'`,
+      const { rows } = await this.pool.query<{
+        category_id: string | null;
+        date: Date | string;
+        amount: string;
+        currency_code: string | null;
+      }>(
+        `SELECT gt.category_id, gt.date, gt.amount::text AS amount,
+                COALESCE(NULLIF(TRIM(gt.currency_code::text), ''), 'BYN') AS currency_code
+         FROM group_transactions gt
+         WHERE gt.room_id = $1::uuid AND COALESCE(gt.type::text, 'expense') = 'expense'`,
         [roomId],
       );
       return rows.map((r) => ({
         category_id: r.category_id,
         date: r.date instanceof Date ? r.date : new Date(r.date),
-        amount: r.amount,
+        amount: String(this.groupAmountToByn(r.amount, r.currency_code)),
       }));
     }
     const sql = userId
@@ -274,16 +295,23 @@ export class StatisticsService {
     const start = new Date(year, 0, 1);
     const end = new Date(year, lastMonthIndex + 1, 0);
     if (roomId) {
-      const { rows } = await this.pool.query(
-        `SELECT category_id, date, amount::text AS amount FROM group_transactions
-         WHERE room_id = $1 AND date >= $2 AND date <= $3
-           AND COALESCE(type::text, 'expense') = 'expense'`,
+      const { rows } = await this.pool.query<{
+        category_id: string | null;
+        date: Date | string;
+        amount: string;
+        currency_code: string | null;
+      }>(
+        `SELECT gt.category_id, gt.date, gt.amount::text AS amount,
+                COALESCE(NULLIF(TRIM(gt.currency_code::text), ''), 'BYN') AS currency_code
+         FROM group_transactions gt
+         WHERE gt.room_id = $1::uuid AND gt.date >= $2 AND gt.date <= $3
+           AND COALESCE(gt.type::text, 'expense') = 'expense'`,
         [roomId, start, end],
       );
       return rows.map((r) => ({
         category_id: r.category_id,
         date: r.date instanceof Date ? r.date : new Date(r.date),
-        amount: r.amount,
+        amount: String(this.groupAmountToByn(r.amount, r.currency_code)),
       }));
     }
     const sql = userId
@@ -308,16 +336,23 @@ export class StatisticsService {
     const start = new Date(ref.getFullYear(), ref.getMonth() - 11, 1);
     const end = new Date(ref.getFullYear(), ref.getMonth() + 1, 0);
     if (roomId) {
-      const { rows } = await this.pool.query(
-        `SELECT category_id, date, amount::text AS amount FROM group_transactions
-         WHERE room_id = $1 AND date >= $2 AND date <= $3
-           AND COALESCE(type::text, 'expense') = 'expense'`,
+      const { rows } = await this.pool.query<{
+        category_id: string | null;
+        date: Date | string;
+        amount: string;
+        currency_code: string | null;
+      }>(
+        `SELECT gt.category_id, gt.date, gt.amount::text AS amount,
+                COALESCE(NULLIF(TRIM(gt.currency_code::text), ''), 'BYN') AS currency_code
+         FROM group_transactions gt
+         WHERE gt.room_id = $1::uuid AND gt.date >= $2 AND gt.date <= $3
+           AND COALESCE(gt.type::text, 'expense') = 'expense'`,
         [roomId, start, end],
       );
       return rows.map((r) => ({
         category_id: r.category_id,
         date: r.date instanceof Date ? r.date : new Date(r.date),
-        amount: r.amount,
+        amount: String(this.groupAmountToByn(r.amount, r.currency_code)),
       }));
     }
     const sql = userId

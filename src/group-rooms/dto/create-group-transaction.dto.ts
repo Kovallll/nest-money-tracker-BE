@@ -7,6 +7,7 @@ import {
   IsString,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 
 export class CreateGroupTransactionDto {
@@ -25,8 +26,14 @@ export class CreateGroupTransactionDto {
   cardId?: number;
 
   @IsOptional()
-  @IsIn(['expense', 'revenue'])
-  type?: 'expense' | 'revenue';
+  @IsIn(['expense', 'revenue', 'transfer'])
+  type?: 'expense' | 'revenue' | 'transfer';
+
+  /** При type = transfer — карта зачисления (обе карты должны принадлежать paidBy). */
+  @ValidateIf((o: CreateGroupTransactionDto) => o.type === 'transfer')
+  @IsNumber()
+  @Min(1)
+  transferToCardId?: number;
 
   @IsOptional()
   @IsBoolean()

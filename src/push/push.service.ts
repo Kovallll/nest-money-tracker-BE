@@ -199,7 +199,7 @@ export class PushService {
   async notifyNewTransaction(userId: string, transaction: any) {
     return this.sendToUser(userId, {
       title: 'Новая транзакция',
-      body: `${transaction.type === 'expense' ? 'Расход' : 'Доход'}: ${transaction.amount} ₽ — ${transaction.title}`,
+      body: `${transaction.type === 'expense' ? 'Расход' : transaction.type === 'transfer' ? 'Перевод' : 'Доход'}: ${transaction.amount} ₽ — ${transaction.title}`,
       url: '/transactions',
     });
   }

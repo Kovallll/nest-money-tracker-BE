@@ -113,16 +113,44 @@ export class GeminiProvider implements AiProvider {
       throw new BadRequestException('Gemini не вернул корректную сумму');
     }
 
+    const rawType = String(parsed.type ?? input.mergeFrom?.type ?? '').toLowerCase();
+    const txType: 'expense' | 'revenue' | 'transfer' =
+      rawType === 'revenue' ? 'revenue' : rawType === 'transfer' ? 'transfer' : 'expense';
+
     const validCategoryIds = new Set(categories.map((c) => c.id));
-    const selectedCategoryId = validCategoryIds.has(String(parsed.categoryId))
-      ? String(parsed.categoryId)
-      : input.context.fallbackCategoryId;
+    const categoryPick =
+      parsed.categoryId !== undefined && parsed.categoryId !== null && String(parsed.categoryId) !== ''
+        ? String(parsed.categoryId)
+        : input.mergeFrom?.categoryId != null && String(input.mergeFrom.categoryId) !== ''
+          ? String(input.mergeFrom.categoryId)
+          : '';
+    const selectedCategoryId =
+      txType === 'transfer'
+        ? undefined
+        : validCategoryIds.has(categoryPick)
+          ? categoryPick
+          : input.context.fallbackCategoryId;
 
     const validCardIds = new Set(cards.map((c) => Number(c.id)));
+    const fromParsedCard = parsed.cardId != null ? Number(parsed.cardId) : NaN;
     const selectedCardId =
-      parsed.cardId != null && validCardIds.has(Number(parsed.cardId))
-        ? Number(parsed.cardId)
+      Number.isFinite(fromParsedCard) && validCardIds.has(fromParsedCard)
+        ? fromParsedCard
         : (input.fallbackCardId ?? input.context.primaryCardId);
+
+    let transferToCardId: number | undefined;
+    if (txType === 'transfer') {
+      const fromParsed = Number(parsed.transferToCardId);
+      const fromMerge = Number(input.mergeFrom?.transferToCardId);
+      const toId =
+        Number.isFinite(fromParsed) && validCardIds.has(fromParsed) ? fromParsed : fromMerge;
+      if (!Number.isFinite(toId) || !validCardIds.has(toId) || toId === selectedCardId) {
+        throw new BadRequestException(
+          'Для перевода укажите transferToCardId — вторую карту из списка, отличную от cardId.',
+        );
+      }
+      transferToCardId = toId;
+    }
 
     const explicitCurrency = this.extractExplicitCurrency(input.sourceTextForCurrency);
     const currencyCode: 'BYN' | 'USD' | 'EUR' | 'RUB' = explicitCurrency
@@ -136,11 +164,10 @@ export class GeminiProvider implements AiProvider {
         ? parsed.affectsCardBalance
         : input.mergeFrom?.affectsCardBalance !== false;
 
-    return {
+    const base: ParsedTransactionDraft = {
       userId: input.context.userId,
       cardId: selectedCardId,
-      categoryId: selectedCategoryId,
-      type: parsed.type === 'revenue' ? 'revenue' : 'expense',
+      type: txType,
       amount,
       title: String(parsed.title || 'Транзакция из Telegram').slice(0, 255),
       description: parsed.description ? String(parsed.description) : undefined,
@@ -149,6 +176,9 @@ export class GeminiProvider implements AiProvider {
       paymentMethod: parsed.paymentMethod === 'cash' ? 'cash' : 'card',
       affectsCardBalance,
     };
+    if (selectedCategoryId !== undefined) base.categoryId = selectedCategoryId;
+    if (transferToCardId !== undefined) base.transferToCardId = transferToCardId;
+    return base;
   }
 
   async parseReceipt(input: ParseReceiptInput): Promise<ParsedTransactionDraft> {
@@ -157,8 +187,9 @@ export class GeminiProvider implements AiProvider {
     const prompt = [
       'Ты анализируешь чек/сообщение пользователя и возвращаешь только JSON без markdown.',
       'Формат JSON:',
-      '{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue","paymentMethod":"cash|card","cardId":number,"categoryId":string} плюс опционально affectsCardBalance:boolean',
+      '{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue|transfer","paymentMethod":"cash|card","cardId":number,"categoryId":string,"transferToCardId":number} плюс опционально affectsCardBalance:boolean',
       'cardId выбирай только из списка карт пользователя, categoryId только из списка категорий.',
+      'Если type="transfer": обязательны cardId (списание) и transferToCardId (зачисление) — две разные карты из списка; categoryId можно опустить.',
       'affectsCardBalance: false только если пользователь явно просит не списывать с карты; иначе true или опусти поле.',
       'Если валюта в тексте явно не указана, ставь currencyCode="BYN".',
       `sourceType=${input.sourceType}`,
@@ -180,7 +211,7 @@ export class GeminiProvider implements AiProvider {
     const prompt = [
       'Ты редактируешь готовый черновик транзакции по комментарию пользователя.',
       'Верни только JSON без markdown в формате:',
-      '{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue","paymentMethod":"cash|card","cardId":number,"categoryId":string} плюс опционально affectsCardBalance:boolean',
+      '{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue|transfer","paymentMethod":"cash|card","cardId":number,"categoryId":string,"transferToCardId":number} плюс опционально affectsCardBalance:boolean',
       'Меняй только то, что пользователь попросил. Остальное оставляй из текущего черновика.',
       'affectsCardBalance: false если просят не списывать с карты; иначе сохраняй из черновика.',
       'cardId выбирай только из списка карт, categoryId только из списка категорий.',
@@ -206,7 +237,7 @@ export class GeminiProvider implements AiProvider {
     const prompt = [
       'Ты проверяешь и корректируешь черновик транзакции после OCR чека.',
       'Верни только JSON без markdown в формате:',
-      '{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue","paymentMethod":"cash|card","cardId":number,"categoryId":string} плюс опционально affectsCardBalance:boolean',
+      '{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue|transfer","paymentMethod":"cash|card","cardId":number,"categoryId":string,"transferToCardId":number} плюс опционально affectsCardBalance:boolean',
       'Важные правила:',
       '- title и description должны быть короткими (2-6 слов) и осмысленными.',
       '- Для title/description используй НАЗВАНИЕ МАГАЗИНА из шапки чека (например после слова "магазин"), если оно есть.',

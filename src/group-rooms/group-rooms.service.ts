@@ -209,6 +209,35 @@ export class GroupRoomsService implements OnModuleInit {
     return false;
   }
 
+  private async queryGroupTxTransferToExists(): Promise<boolean> {
+    const { rows } = await this.pool.query(
+      `SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'group_transactions'
+         AND column_name = 'transfer_to_card_id'
+       LIMIT 1`,
+    );
+    return rows.length > 0;
+  }
+
+  private async tryAddGroupTxTransferToColumn(): Promise<void> {
+    try {
+      await this.pool.query(
+        `ALTER TABLE group_transactions
+         ADD COLUMN IF NOT EXISTS transfer_to_card_id INTEGER REFERENCES cards(id) ON DELETE SET NULL`,
+      );
+    } catch (err) {
+      this.logger.warn(`group_transactions ADD transfer_to_card_id: ${(err as Error).message}`);
+    }
+  }
+
+  /** Колонка transfer_to_card_id для перевода между картами участника. */
+  private async ensureGroupTxTransferToCardColumn(): Promise<boolean> {
+    if (await this.queryGroupTxTransferToExists()) return true;
+    await this.tryAddGroupTxTransferToColumn();
+    return this.queryGroupTxTransferToExists();
+  }
+
   private roleWeight(role: GroupRole): number {
     if (role === 'owner') return 3;
     if (role === 'admin') return 2;
@@ -592,7 +621,11 @@ export class GroupRoomsService implements OnModuleInit {
     const hasCardCol = await this.ensureGroupTxCardIdColumn();
     const hasTypeCol = await this.ensureGroupTxTypeColumn();
     const hasAffectsCol = await this.ensureGroupTxAffectsCardBalanceColumn();
+    const hasTransferToCol = await this.ensureGroupTxTransferToCardColumn();
     const cardIdSelect = hasCardCol ? 'gt.card_id AS "cardId"' : 'NULL::integer AS "cardId"';
+    const transferToSelect = hasTransferToCol
+      ? 'gt.transfer_to_card_id AS "transferToCardId"'
+      : 'NULL::integer AS "transferToCardId"';
     const typeSelect = hasTypeCol
       ? `COALESCE(gt.type::text, 'expense') AS "type"`
       : `'expense' AS "type"`;
@@ -622,6 +655,7 @@ export class GroupRoomsService implements OnModuleInit {
          gt.created_by AS "createdBy",
          gt.category_id AS "categoryId",
          ${cardIdSelect},
+         ${transferToSelect},
          ${typeSelect},
          ${affectsSelect},
          gt.amount::float8 AS amount,
@@ -744,7 +778,9 @@ export class GroupRoomsService implements OnModuleInit {
     const hasCardCol = await this.ensureGroupTxCardIdColumn();
     const hasTypeCol = await this.ensureGroupTxTypeColumn();
     const hasAffectsCol = await this.ensureGroupTxAffectsCardBalanceColumn();
-    const txType: 'expense' | 'revenue' = dto.type === 'revenue' ? 'revenue' : 'expense';
+    const hasTransferToCol = await this.ensureGroupTxTransferToCardColumn();
+    const txType: 'expense' | 'revenue' | 'transfer' =
+      dto.type === 'revenue' ? 'revenue' : dto.type === 'transfer' ? 'transfer' : 'expense';
     const affectBalance = dto.affectsCardBalance !== false;
     const paidBy = dto.paidBy ?? userId;
     const paidByRole = await this.getMemberRole(this.pool, roomId, paidBy);
@@ -756,7 +792,24 @@ export class GroupRoomsService implements OnModuleInit {
     if (!hasCardCol) {
       cardId = null;
     }
-    if (cardId != null) {
+    let transferToCardId: number | null =
+      dto.transferToCardId != null && Number.isFinite(Number(dto.transferToCardId))
+        ? Math.trunc(Number(dto.transferToCardId))
+        : null;
+    if (!hasTransferToCol) {
+      transferToCardId = null;
+    }
+
+    if (txType === 'transfer') {
+      if (!hasCardCol || !hasTransferToCol) {
+        throw new BadRequestException('Перевод в комнате недоступен: нет колонок card_id / transfer_to_card_id');
+      }
+      if (cardId == null || transferToCardId == null || cardId === transferToCardId) {
+        throw new BadRequestException('Для перевода укажите две разные карты плательщика');
+      }
+      await this.transactionsService.assertPersonalCardBelongsToUser(cardId, paidBy);
+      await this.transactionsService.assertPersonalCardBelongsToUser(transferToCardId, paidBy);
+    } else if (cardId != null) {
       await this.transactionsService.assertPersonalCardBelongsToUser(cardId, paidBy);
     }
 
@@ -766,6 +819,10 @@ export class GroupRoomsService implements OnModuleInit {
     if (hasCardCol) {
       cols.push('card_id');
       vals.push(cardId);
+    }
+    if (hasTransferToCol && txType === 'transfer') {
+      cols.push('transfer_to_card_id');
+      vals.push(transferToCardId);
     }
     cols.push('amount', 'currency_code', 'title', 'description', 'date');
     vals.push(dto.amount, cur, dto.title, dto.description ?? null, dto.date);
@@ -782,6 +839,7 @@ export class GroupRoomsService implements OnModuleInit {
     const cardIdReturning = hasCardCol
       ? 'card_id AS "cardId",'
       : 'NULL::integer AS "cardId",';
+    const transferToReturning = hasTransferToCol ? 'transfer_to_card_id AS "transferToCardId",' : '';
     const typeReturning = hasTypeCol ? 'type,' : '';
     const affectsReturning = hasAffectsCol
       ? 'affects_card_balance AS "affectsCardBalance",'
@@ -794,6 +852,7 @@ export class GroupRoomsService implements OnModuleInit {
          created_by AS "createdBy",
          category_id AS "categoryId",
          ${cardIdReturning}
+         ${transferToReturning}
          amount::float8 AS amount,
          currency_code AS "currencyCode",
          title,
@@ -814,7 +873,20 @@ export class GroupRoomsService implements OnModuleInit {
 
     const created = rows[0] as { id: string };
     const shouldApplyCard = cardId != null && (hasAffectsCol ? affectBalance : true);
-    if (shouldApplyCard && cardId != null) {
+    if (shouldApplyCard && cardId != null && txType === 'transfer' && transferToCardId != null) {
+      try {
+        await this.transactionsService.applyTransferBetweenCards(
+          cardId,
+          transferToCardId,
+          dto.amount,
+          cur,
+          1,
+        );
+      } catch (err) {
+        await this.pool.query('DELETE FROM group_transactions WHERE id = $1', [created.id]);
+        throw err;
+      }
+    } else if (shouldApplyCard && cardId != null) {
       try {
         await this.transactionsService.applyPersonalCardForGroupTx(
           paidBy,
@@ -854,66 +926,241 @@ export class GroupRoomsService implements OnModuleInit {
     const hasCardCol = await this.ensureGroupTxCardIdColumn();
     const hasTypeCol = await this.ensureGroupTxTypeColumn();
     const hasAffectsCol = await this.ensureGroupTxAffectsCardBalanceColumn();
+    const hasTransferToCol = await this.ensureGroupTxTransferToCardColumn();
     const role = await this.ensureRole(this.pool, roomId, userId, 'member');
-    const existingRes = await this.pool.query<{ created_by: string | null }>(
-      `SELECT created_by
-       FROM group_transactions
-       WHERE id = $1 AND room_id = $2
+
+    const cardSel = hasCardCol ? 'gt.card_id' : 'NULL::integer AS card_id';
+    const transferSel = hasTransferToCol
+      ? 'gt.transfer_to_card_id'
+      : 'NULL::integer AS transfer_to_card_id';
+    const typeSel = hasTypeCol ? `COALESCE(gt.type::text, 'expense') AS type` : `'expense' AS type`;
+    const affectsSel = hasAffectsCol
+      ? 'COALESCE(gt.affects_card_balance, TRUE) AS affects_card_balance'
+      : 'TRUE AS affects_card_balance';
+
+    const existingRes = await this.pool.query<{
+      created_by: string | null;
+      paid_by: string | null;
+      card_id: number | null;
+      transfer_to_card_id: number | null;
+      category_id: string | null;
+      amount: string;
+      currency_code: string;
+      type: string;
+      affects_card_balance: boolean;
+      title: string;
+      description: string | null;
+      date: string;
+    }>(
+      `SELECT gt.created_by, gt.paid_by, ${cardSel} AS card_id, ${transferSel} AS transfer_to_card_id,
+              gt.category_id, gt.amount, gt.currency_code, ${typeSel}, ${affectsSel},
+              gt.title, gt.description, gt.date::text AS date
+       FROM group_transactions gt
+       WHERE gt.id = $1::uuid AND gt.room_id = $2::uuid
        LIMIT 1`,
       [transactionId, roomId],
     );
-    const existing = existingRes.rows[0];
-    if (!existing) throw new NotFoundException('Групповая транзакция не найдена');
-    if (role === 'member' && existing.created_by !== userId) {
+    const ex = existingRes.rows[0];
+    if (!ex) throw new NotFoundException('Групповая транзакция не найдена');
+    if (role === 'member' && ex.created_by !== userId) {
       throw new ForbiddenException('Можно редактировать только свои транзакции');
     }
     if (dto.paidBy) {
       const paidByRole = await this.getMemberRole(this.pool, roomId, dto.paidBy);
       if (!paidByRole) throw new BadRequestException('paidBy должен быть участником комнаты');
     }
-    const cardRet = hasCardCol ? 'card_id AS "cardId"' : 'NULL::integer AS "cardId"';
-    const typeRet = hasTypeCol ? 'type,' : '';
-    const affectsRet = hasAffectsCol ? 'affects_card_balance AS "affectsCardBalance",' : 'TRUE AS "affectsCardBalance",';
+
+    const existingTypeRaw = String(ex.type || 'expense').toLowerCase();
+    const existingType: 'expense' | 'revenue' | 'transfer' =
+      existingTypeRaw === 'revenue'
+        ? 'revenue'
+        : existingTypeRaw === 'transfer'
+          ? 'transfer'
+          : 'expense';
+
+    const nextPaidBy = dto.paidBy ?? ex.paid_by;
+    const nextType: 'expense' | 'revenue' | 'transfer' =
+      dto.type === 'revenue'
+        ? 'revenue'
+        : dto.type === 'transfer'
+          ? 'transfer'
+          : dto.type === 'expense'
+            ? 'expense'
+            : existingType;
+
+    let nextCardId: number | null = null;
+    if (hasCardCol) {
+      if (dto.cardId === undefined) {
+        nextCardId = ex.card_id != null ? Math.trunc(Number(ex.card_id)) : null;
+      } else if (dto.cardId == null || !Number.isFinite(Number(dto.cardId))) {
+        nextCardId = null;
+      } else {
+        nextCardId = Math.trunc(Number(dto.cardId));
+      }
+    }
+
+    let nextTransferTo: number | null = null;
+    if (hasTransferToCol && nextType === 'transfer') {
+      if (dto.transferToCardId !== undefined && dto.transferToCardId != null) {
+        nextTransferTo = Math.trunc(Number(dto.transferToCardId));
+      } else if (ex.transfer_to_card_id != null) {
+        nextTransferTo = Math.trunc(Number(ex.transfer_to_card_id));
+      }
+    }
+
+    const nextCategoryId =
+      dto.categoryId !== undefined ? dto.categoryId : ex.category_id;
+    const nextAmount = dto.amount ?? parseFloat(String(ex.amount));
+    const nextCurrency = dto.currencyCode ?? ex.currency_code ?? 'BYN';
+    const nextTitle = dto.title ?? ex.title;
+    const nextDescription = dto.description !== undefined ? dto.description : ex.description;
+    const nextDate = dto.date ?? ex.date;
+    const nextAffects =
+      hasAffectsCol && dto.affectsCardBalance !== undefined
+        ? dto.affectsCardBalance !== false
+        : hasAffectsCol
+          ? ex.affects_card_balance !== false
+          : true;
+
+    if (nextType === 'transfer') {
+      if (!hasCardCol || !hasTransferToCol) {
+        throw new BadRequestException('Перевод в комнате недоступен: нет колонок card_id / transfer_to_card_id');
+      }
+      if (nextCardId == null || nextTransferTo == null || nextCardId === nextTransferTo) {
+        throw new BadRequestException('Для перевода укажите две разные карты плательщика');
+      }
+      if (!nextPaidBy) {
+        throw new BadRequestException('Для перевода нужен плательщик (paid_by)');
+      }
+      await this.transactionsService.assertPersonalCardBelongsToUser(nextCardId, nextPaidBy);
+      await this.transactionsService.assertPersonalCardBelongsToUser(nextTransferTo, nextPaidBy);
+    } else if (nextCardId != null && nextPaidBy) {
+      await this.transactionsService.assertPersonalCardBelongsToUser(nextCardId, nextPaidBy);
+    }
+
+    const oldPayer = ex.paid_by;
+    const oldAffects = ex.affects_card_balance !== false;
+    const oldAmount = parseFloat(String(ex.amount));
+    const oldCur = ex.currency_code ?? 'BYN';
+
+    if (oldAffects && oldPayer) {
+      if (
+        existingType === 'transfer' &&
+        ex.card_id != null &&
+        ex.transfer_to_card_id != null
+      ) {
+        await this.transactionsService.applyTransferBetweenCards(
+          Number(ex.card_id),
+          Number(ex.transfer_to_card_id),
+          oldAmount,
+          oldCur,
+          -1,
+        );
+      } else if (ex.card_id != null && existingType !== 'transfer') {
+        await this.transactionsService.reversePersonalCardForGroupTx(
+          oldPayer,
+          Number(ex.card_id),
+          oldAmount,
+          oldCur,
+          existingType,
+        );
+      }
+    }
+
+    const params: unknown[] = [
+      nextPaidBy,
+      nextCategoryId,
+      nextAmount,
+      nextCurrency,
+      nextTitle,
+      nextDescription,
+      nextDate,
+    ];
+    let setSql =
+      'paid_by = $1, category_id = $2, amount = $3, currency_code = $4, title = $5, description = $6, date = $7';
+    let p = 8;
+    if (hasCardCol) {
+      setSql += `, card_id = $${p++}`;
+      params.push(nextCardId);
+    }
+    if (hasTypeCol) {
+      setSql += `, type = $${p++}`;
+      params.push(nextType);
+    }
+    if (hasAffectsCol) {
+      setSql += `, affects_card_balance = $${p++}`;
+      params.push(nextAffects);
+    }
+    if (hasTransferToCol) {
+      setSql += `, transfer_to_card_id = $${p++}`;
+      params.push(nextType === 'transfer' ? nextTransferTo : null);
+    }
+    setSql += ', updated_at = NOW()';
+    const idSlot = p;
+    const roomSlot = p + 1;
+    params.push(transactionId, roomId);
+
+    const cardIdReturning = hasCardCol
+      ? 'card_id AS "cardId",'
+      : 'NULL::integer AS "cardId",';
+    const transferToReturning = hasTransferToCol
+      ? 'transfer_to_card_id AS "transferToCardId",'
+      : '';
+    const typeReturning = hasTypeCol ? 'type,' : '';
+    const affectsReturning = hasAffectsCol
+      ? 'affects_card_balance AS "affectsCardBalance",'
+      : 'TRUE AS "affectsCardBalance",';
+
     const { rows } = await this.pool.query(
       `UPDATE group_transactions
-       SET paid_by = COALESCE($1, paid_by),
-           category_id = COALESCE($2, category_id),
-           amount = COALESCE($3, amount),
-           currency_code = COALESCE($4, currency_code),
-           title = COALESCE($5, title),
-           description = COALESCE($6, description),
-           date = COALESCE($7, date),
-           updated_at = NOW()
-       WHERE id = $8 AND room_id = $9
+       SET ${setSql}
+       WHERE id = $${idSlot}::uuid AND room_id = $${roomSlot}::uuid
        RETURNING
          id,
          room_id AS "roomId",
          paid_by AS "paidBy",
          created_by AS "createdBy",
          category_id AS "categoryId",
-         ${cardRet},
+         ${cardIdReturning}
+         ${transferToReturning}
          amount::float8 AS amount,
          currency_code AS "currencyCode",
          title,
          description,
          date,
          is_split AS "isSplit",
-         ${typeRet}
-         ${affectsRet}
+         ${typeReturning}
+         ${affectsReturning}
          created_at AS "createdAt",
          updated_at AS "updatedAt"`,
-      [
-        dto.paidBy ?? null,
-        dto.categoryId ?? null,
-        dto.amount ?? null,
-        dto.currencyCode ?? null,
-        dto.title ?? null,
-        dto.description ?? null,
-        dto.date ?? null,
-        transactionId,
-        roomId,
-      ],
+      params,
     );
+
+    const shouldApplyCard = nextCardId != null && (hasAffectsCol ? nextAffects : true);
+    if (
+      shouldApplyCard &&
+      nextPaidBy &&
+      nextType === 'transfer' &&
+      nextTransferTo != null &&
+      nextCardId != null
+    ) {
+      await this.transactionsService.applyTransferBetweenCards(
+        nextCardId,
+        nextTransferTo,
+        nextAmount,
+        nextCurrency,
+        1,
+      );
+    } else if (shouldApplyCard && nextCardId != null && nextPaidBy && nextType !== 'transfer') {
+      await this.transactionsService.applyPersonalCardForGroupTx(
+        nextPaidBy,
+        nextCardId,
+        nextAmount,
+        nextCurrency,
+        hasTypeCol ? nextType : 'expense',
+      );
+    }
+
     await this.appendActivity(
       this.pool,
       roomId,
@@ -941,16 +1188,19 @@ export class GroupRoomsService implements OnModuleInit {
     const affectsSel = hasAffectsCol
       ? 'COALESCE(affects_card_balance, TRUE) AS affects_card_balance'
       : 'TRUE AS affects_card_balance';
+    const hasTransferToCol = await this.ensureGroupTxTransferToCardColumn();
+    const transferSel = hasTransferToCol ? 'transfer_to_card_id' : 'NULL::integer AS transfer_to_card_id';
     const existingRes = await this.pool.query<{
       created_by: string | null;
       paid_by: string | null;
       card_id: number | null;
+      transfer_to_card_id: number | null;
       amount: string;
       currency_code: string;
       type: string;
       affects_card_balance: boolean;
     }>(
-      `SELECT created_by, paid_by, ${cardSel}, amount, currency_code, ${typeSel}, ${affectsSel}
+      `SELECT created_by, paid_by, ${cardSel}, ${transferSel}, amount, currency_code, ${typeSel}, ${affectsSel}
        FROM group_transactions
        WHERE id = $1 AND room_id = $2
        LIMIT 1`,
@@ -961,20 +1211,30 @@ export class GroupRoomsService implements OnModuleInit {
     if (role === 'member' && existing.created_by !== userId) {
       throw new ForbiddenException('Можно удалять только свои транзакции');
     }
-    if (
-      existing.affects_card_balance &&
-      existing.card_id != null &&
-      existing.paid_by
-    ) {
-      const txType: 'expense' | 'revenue' =
-        existing.type === 'revenue' ? 'revenue' : 'expense';
-      await this.transactionsService.reversePersonalCardForGroupTx(
-        existing.paid_by,
-        Number(existing.card_id),
-        parseFloat(String(existing.amount)),
-        existing.currency_code ?? 'BYN',
-        txType,
-      );
+    if (existing.affects_card_balance && existing.paid_by) {
+      const txType: 'expense' | 'revenue' | 'transfer' =
+        existing.type === 'revenue' ? 'revenue' : existing.type === 'transfer' ? 'transfer' : 'expense';
+      if (
+        txType === 'transfer' &&
+        existing.card_id != null &&
+        existing.transfer_to_card_id != null
+      ) {
+        await this.transactionsService.applyTransferBetweenCards(
+          Number(existing.card_id),
+          Number(existing.transfer_to_card_id),
+          parseFloat(String(existing.amount)),
+          existing.currency_code ?? 'BYN',
+          -1,
+        );
+      } else if (existing.card_id != null && txType !== 'transfer') {
+        await this.transactionsService.reversePersonalCardForGroupTx(
+          existing.paid_by,
+          Number(existing.card_id),
+          parseFloat(String(existing.amount)),
+          existing.currency_code ?? 'BYN',
+          txType,
+        );
+      }
     }
     const { rowCount } = await this.pool.query(
       'DELETE FROM group_transactions WHERE id = $1 AND room_id = $2',

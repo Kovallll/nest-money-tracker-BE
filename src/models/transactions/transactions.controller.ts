@@ -27,7 +27,7 @@ export class TransactionsController {
   @Get('user/:userId')
   getTransactionsByUserId(
     @Param('userId') userId: string,
-    @Query('type') type?: 'expense' | 'revenue',
+    @Query('type') type?: 'expense' | 'revenue' | 'transfer',
   ) {
     if (!userId?.trim()) {
       throw new BadRequestException(

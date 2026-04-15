@@ -35,8 +35,10 @@ type UserContext = {
 type PendingTx = {
   userId: string;
   cardId: number;
-  categoryId: string;
-  type: 'expense' | 'revenue';
+  categoryId?: string;
+  type: 'expense' | 'revenue' | 'transfer';
+  /** Карта зачисления при type = transfer. */
+  transferToCardId?: number;
   amount: number;
   title: string;
   description?: string;
@@ -226,7 +228,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       const editable = await this.getEditableDraft(userCtx.userId);
       if (editable) {
         const categoriesForPrompt = userCtx.categories.map((c) => ({ id: c.id, title: c.title }));
-        const fallbackCategoryId = categoriesForPrompt[0]?.id || editable.tx.categoryId;
+        const fallbackCategoryId =
+          categoriesForPrompt[0]?.id ?? editable.tx.categoryId ?? '';
         const cardsForPrompt = userCtx.cards.map((c) => ({
           id: c.id,
           name: c.name,
@@ -315,8 +318,15 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       const created = await this.transactionsService.createTransaction({
         userId: tx.userId,
         cardId: String(tx.cardId),
-        categoryId: tx.categoryId,
-        type: tx.type,
+        ...(tx.type === 'transfer'
+          ? {
+              type: 'transfer' as const,
+              transferToCardId: String(tx.transferToCardId),
+            }
+          : {
+              categoryId: tx.categoryId ?? '',
+              type: tx.type,
+            }),
         amount: tx.amount,
         title: tx.title,
         description: tx.description,
@@ -401,8 +411,14 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
     const normalizedDate = this.normalizeDateForInput(sourceText, finalParsed.date);
     const categoryTitle =
-      userCtx.categories.find((c) => c.id === finalParsed.categoryId)?.title || 'Без категории';
+      finalParsed.type === 'transfer'
+        ? 'Перевод'
+        : userCtx.categories.find((c) => c.id === finalParsed.categoryId)?.title || 'Без категории';
     const cardName = this.resolveCardDisplayName(userCtx, finalParsed.cardId);
+    const toCardName =
+      finalParsed.type === 'transfer' && finalParsed.transferToCardId != null
+        ? this.resolveCardDisplayName(userCtx, finalParsed.transferToCardId)
+        : '';
     const txForConfirm = { ...finalParsed, date: normalizedDate };
 
     const { rows } = await this.pool.query(
@@ -414,7 +430,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       [
         finalParsed.userId,
         finalParsed.cardId,
-        finalParsed.categoryId,
+        finalParsed.type === 'transfer' ? null : finalParsed.categoryId ?? null,
         finalParsed.type,
         finalParsed.amount,
         finalParsed.currencyCode,
@@ -431,8 +447,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       `Сумма: ${finalParsed.amount} ${finalParsed.currencyCode}`,
       `Тип: ${finalParsed.type}`,
       `Дата: ${normalizedDate}`,
-      `Категория: ${categoryTitle}`,
-      `Карта: ${cardName}`,
+      finalParsed.type === 'transfer' ? `Перевод: ${cardName} → ${toCardName}` : `Категория: ${categoryTitle}`,
+      finalParsed.type === 'transfer' ? null : `Карта: ${cardName}`,
       `Списание с карты: ${finalParsed.affectsCardBalance !== false ? 'да' : 'нет'}`,
       `Заголовок: ${finalParsed.title}`,
       finalParsed.description ? `Описание: ${finalParsed.description}` : null,
@@ -450,15 +466,21 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     tx: PendingTx,
   ): Promise<void> {
     const categoryTitle =
-      userCtx.categories.find((c) => c.id === tx.categoryId)?.title || 'Без категории';
+      tx.type === 'transfer'
+        ? 'Перевод'
+        : userCtx.categories.find((c) => c.id === tx.categoryId)?.title || 'Без категории';
     const cardName = this.resolveCardDisplayName(userCtx, tx.cardId);
+    const toCardName =
+      tx.type === 'transfer' && tx.transferToCardId != null
+        ? this.resolveCardDisplayName(userCtx, tx.transferToCardId)
+        : '';
     const preview = [
       'Проверьте данные перед созданием транзакции:',
       `Сумма: ${tx.amount} ${tx.currencyCode}`,
       `Тип: ${tx.type}`,
       `Дата: ${tx.date}`,
-      `Категория: ${categoryTitle}`,
-      `Карта: ${cardName}`,
+      tx.type === 'transfer' ? `Перевод: ${cardName} → ${toCardName}` : `Категория: ${categoryTitle}`,
+      tx.type === 'transfer' ? null : `Карта: ${cardName}`,
       `Списание с карты: ${tx.affectsCardBalance !== false ? 'да' : 'нет'}`,
       `Заголовок: ${tx.title}`,
       tx.description ? `Описание: ${tx.description}` : null,

@@ -23,8 +23,14 @@ export class UpdateTransactionDto {
   categoryId?: string;
 
   @IsOptional()
-  @IsIn(['expense', 'revenue'], { message: 'type должен быть expense или revenue' })
-  type?: 'expense' | 'revenue';
+  @IsIn(['expense', 'revenue', 'transfer'], {
+    message: 'type должен быть expense, revenue или transfer',
+  })
+  type?: 'expense' | 'revenue' | 'transfer';
+
+  @IsOptional()
+  @IsString()
+  transferToCardId?: string;
 
   @IsOptional()
   @IsNumber()

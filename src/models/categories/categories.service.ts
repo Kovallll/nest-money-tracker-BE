@@ -347,7 +347,7 @@ export class CategoriesService implements OnModuleInit {
     const { rows: gtx } = await this.pool.query(
       `SELECT gt.id, gt.amount, gt.date, gt.title, gt.description, c.name as category_name, gt.category_id, gt.type
        FROM group_transactions gt
-       JOIN categories c ON c.id = gt.category_id
+       LEFT JOIN categories c ON c.id = gt.category_id
        WHERE gt.room_id = $1
        ORDER BY gt.date DESC`,
       [roomId],
@@ -355,7 +355,9 @@ export class CategoriesService implements OnModuleInit {
 
     const transactionsByCategory: Record<string, any[]> = {};
     for (const t of gtx) {
+      if (String(t.type ?? 'expense') === 'transfer') continue;
       const cid = t.category_id;
+      if (!cid) continue;
       if (!transactionsByCategory[cid]) transactionsByCategory[cid] = [];
       const txType = String(t.type ?? 'expense') === 'revenue' ? Tabs.Revenues : Tabs.Expenses;
       transactionsByCategory[cid].push({
