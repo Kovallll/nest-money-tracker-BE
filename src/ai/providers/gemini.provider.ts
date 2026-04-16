@@ -33,14 +33,16 @@ type GeminiResponse = {
 type GeminiCallOptions = {
   /** Лимит выходных токенов; для больших JSON (выписка) нужен высокий. */
   maxOutputTokens?: number;
+  /** false — без JSON mode (надёжнее для больших массивов items). */
+  responseJson?: boolean;
 };
 
 @Injectable()
 export class GeminiProvider implements AiProvider {
   private readonly logger = new Logger(GeminiProvider.name);
-  /** Фрагменты выписки: меньше операций за вызов → стабильный JSON от Gemini. */
-  private readonly statementChunkSize = 5500;
-  private readonly statementChunkOverlap = 900;
+  /** Фрагменты выписки: меньше операций за вызов → стабильнее ответ модели. */
+  private readonly statementChunkSize = 3800;
+  private readonly statementChunkOverlap = 700;
 
   constructor(private readonly http: HttpService) {}
 
@@ -97,13 +99,33 @@ export class GeminiProvider implements AiProvider {
     return `${d}|${a}|${t}`;
   }
 
+  /** Ответ без JSON mode — парсим объект из текста (модель иногда ломает строгий JSON mode на длинных выписках). */
+  private extractJsonObjectFromModelText(modelText: string): Record<string, any> {
+    let s = String(modelText || '').trim();
+    const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence) s = fence[1].trim();
+    try {
+      return JSON.parse(s) as Record<string, any>;
+    } catch {
+      const start = s.indexOf('{');
+      const end = s.lastIndexOf('}');
+      if (start >= 0 && end > start) {
+        return JSON.parse(s.slice(start, end + 1)) as Record<string, any>;
+      }
+      throw new BadRequestException('Не удалось выделить JSON из ответа модели');
+    }
+  }
+
   private async callGemini(prompt: string, options?: GeminiCallOptions): Promise<Record<string, any>> {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${this.apiKey()}`;
+    const useJson = options?.responseJson !== false;
     const generationConfig: Record<string, unknown> = {
       temperature: 0.1,
-      responseMimeType: 'application/json',
       maxOutputTokens: options?.maxOutputTokens ?? 8192,
     };
+    if (useJson) {
+      generationConfig.responseMimeType = 'application/json';
+    }
     const body = {
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig,
@@ -143,17 +165,20 @@ export class GeminiProvider implements AiProvider {
       );
       const parts = [
         block ? `Запрос отклонён моделью (${block}).` : '',
-        fr ? `Модель не вернула JSON (finish: ${fr}).` : '',
+        fr ? `Модель не вернула ответ (finish: ${fr}).` : '',
       ].filter(Boolean);
       throw new ServiceUnavailableException(
         parts.length ? parts.join(' ') : 'Gemini вернул пустой ответ. Попробуйте ещё раз.',
       );
     }
-    try {
-      return JSON.parse(text) as Record<string, any>;
-    } catch {
-      throw new BadRequestException('Gemini вернул невалидный JSON');
+    if (useJson) {
+      try {
+        return JSON.parse(text) as Record<string, any>;
+      } catch {
+        throw new BadRequestException('Gemini вернул невалидный JSON');
+      }
     }
+    return this.extractJsonObjectFromModelText(text);
   }
 
   private normalizeParsed(
@@ -272,7 +297,8 @@ export class GeminiProvider implements AiProvider {
     const cards = input.context.cards;
     const preamble = [
       'Ты разбираешь текст банковской выписки или списка операций.',
-      'Верни ТОЛЬКО JSON без markdown в формате:',
+      'Ответь ОДНИМ JSON-объектом без пояснений до или после. Без markdown-ограждений.',
+      'Формат:',
       '{"items":[{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue|transfer","paymentMethod":"cash|card","cardId":number,"categoryId":string,"transferToCardId":number,"affectsCardBalance":boolean}]}',
       'Правила:',
       '- В items только отдельные операции (покупки, переводы, зачисления). Без строк «итого», «остаток», «баланс», заголовков таблицы.',
@@ -307,7 +333,10 @@ export class GeminiProvider implements AiProvider {
         chunks[i],
       ].join('\n');
 
-      const parsed = await this.callGemini(prompt, { maxOutputTokens: 32768 });
+      const parsed = await this.callGemini(prompt, {
+        maxOutputTokens: 32768,
+        responseJson: false,
+      });
       const items = Array.isArray(parsed?.items) ? parsed.items : [];
       for (const row of items) {
         if (!row || typeof row !== 'object') continue;
