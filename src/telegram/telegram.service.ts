@@ -376,7 +376,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (asStatement) {
-        await this.buildStatementBatchPreview(chatId, userCtx, sourceText);
+        await this.runStatementBatchPreviewWithProgress(ctx, chatId, userCtx, sourceText);
       } else {
         await this.buildPreviewAndSend(chatId, userCtx, sourceText, 'ocr');
       }
@@ -430,8 +430,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (asStatement) {
-        await ctx.reply('Разбираю выписку на операции (AI)...');
-        await this.buildStatementBatchPreview(chatId, userCtx, sourceText);
+        await this.runStatementBatchPreviewWithProgress(ctx, chatId, userCtx, sourceText);
       } else {
         await ctx.reply('Формирую одну транзакцию по содержимому...');
         await this.buildPreviewAndSend(chatId, userCtx, sourceText, mime.startsWith('image/') ? 'ocr' : 'text');
@@ -1377,10 +1376,53 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /** Выписка: один статус в чате, по мере разбора обновляется «фрагмент N из M». */
+  private async runStatementBatchPreviewWithProgress(
+    ctx: any,
+    chatId: number,
+    userCtx: UserContext,
+    sourceText: string,
+  ): Promise<void> {
+    let progressMsgId: number | undefined;
+    const show = async (text: string) => {
+      try {
+        if (progressMsgId == null) {
+          const m = await ctx.reply(text);
+          progressMsgId = m.message_id;
+        } else {
+          await ctx.telegram.editMessageText(chatId, progressMsgId, undefined, text);
+        }
+      } catch (e) {
+        this.logger.warn(`statement progress: ${(e as Error).message}`);
+      }
+    };
+    await show('Разбираю выписку на операции (AI)...');
+    await this.buildStatementBatchPreview(chatId, userCtx, sourceText, {
+      onStatementChunkProgress: async ({ current, total }) => {
+        await show(`Разбираю выписку: фрагмент ${current} из ${total}…`);
+      },
+    });
+    if (progressMsgId != null) {
+      try {
+        await ctx.telegram.editMessageText(
+          chatId,
+          progressMsgId,
+          undefined,
+          'Формирую список операций…',
+        );
+      } catch {
+        /* то же текст / rate limit — не критично */
+      }
+    }
+  }
+
   private async buildStatementBatchPreview(
     chatId: number,
     userCtx: UserContext,
     sourceText: string,
+    opts?: {
+      onStatementChunkProgress?: (p: { current: number; total: number }) => void | Promise<void>;
+    },
   ): Promise<void> {
     const categoriesForPrompt = userCtx.categories.map((c) => ({ id: c.id, title: c.title }));
     const fallbackCategoryId = categoriesForPrompt[0]?.id || '';
@@ -1397,6 +1439,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         categories: categoriesForPrompt,
         fallbackCategoryId,
       },
+      onStatementChunkProgress: opts?.onStatementChunkProgress,
     });
 
     const capped = parsedAll.slice(0, this.batchStatementMaxItems);

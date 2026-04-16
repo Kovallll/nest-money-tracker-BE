@@ -40,9 +40,9 @@ type GeminiCallOptions = {
 @Injectable()
 export class GeminiProvider implements AiProvider {
   private readonly logger = new Logger(GeminiProvider.name);
-  /** Фрагменты выписки: меньше операций за вызов → стабильнее ответ модели. */
-  private readonly statementChunkSize = 3800;
-  private readonly statementChunkOverlap = 700;
+  /** Фрагменты выписки: меньший размер → стабильнее ответ модели (больше вызовов). */
+  private readonly statementChunkSize = 2200;
+  private readonly statementChunkOverlap = 500;
 
   constructor(private readonly http: HttpService) {}
 
@@ -326,6 +326,7 @@ export class GeminiProvider implements AiProvider {
     const seen = new Set<string>();
 
     for (let i = 0; i < chunks.length; i++) {
+      await input.onStatementChunkProgress?.({ current: i + 1, total: chunks.length });
       const prompt = [
         preamble,
         `Сейчас передан только ФРАГМЕНТ выписки (${i + 1} из ${chunks.length}). Извлеки операции только из этого фрагмента; дубликаты между фрагментами допустимы — их уберём на сервере.`,
