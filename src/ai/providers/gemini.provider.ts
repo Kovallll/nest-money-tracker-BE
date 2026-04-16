@@ -24,12 +24,23 @@ type GeminiResponse = {
     content?: {
       parts?: Array<{ text?: string }>;
     };
+    finishReason?: string;
   }>;
+  promptFeedback?: { blockReason?: string };
+  error?: { message?: string; code?: number };
+};
+
+type GeminiCallOptions = {
+  /** Лимит выходных токенов; для больших JSON (выписка) нужен высокий. */
+  maxOutputTokens?: number;
 };
 
 @Injectable()
 export class GeminiProvider implements AiProvider {
   private readonly logger = new Logger(GeminiProvider.name);
+  /** Фрагменты выписки: меньше операций за вызов → стабильный JSON от Gemini. */
+  private readonly statementChunkSize = 5500;
+  private readonly statementChunkOverlap = 900;
 
   constructor(private readonly http: HttpService) {}
 
@@ -66,23 +77,54 @@ export class GeminiProvider implements AiProvider {
     return key;
   }
 
-  private async callGemini(prompt: string): Promise<Record<string, any>> {
+  private chunkStatementSource(src: string, chunkSize: number, overlap: number): string[] {
+    const s = src.slice(0, 100000);
+    if (s.length <= chunkSize) return [s];
+    const parts: string[] = [];
+    let start = 0;
+    while (start < s.length) {
+      parts.push(s.slice(start, start + chunkSize));
+      if (start + chunkSize >= s.length) break;
+      start += chunkSize - overlap;
+    }
+    return parts;
+  }
+
+  private statementRowDedupeKey(row: Record<string, any>): string {
+    const a = Number(row.amount) || 0;
+    const d = String(row.date || '').trim();
+    const t = String(row.title || '').trim().toLowerCase().slice(0, 56);
+    return `${d}|${a}|${t}`;
+  }
+
+  private async callGemini(prompt: string, options?: GeminiCallOptions): Promise<Record<string, any>> {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${this.apiKey()}`;
+    const generationConfig: Record<string, unknown> = {
+      temperature: 0.1,
+      responseMimeType: 'application/json',
+      maxOutputTokens: options?.maxOutputTokens ?? 8192,
+    };
     const body = {
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.1, responseMimeType: 'application/json' },
+      generationConfig,
     };
 
     const res = await firstValueFrom(
       this.http.post<GeminiResponse>(endpoint, body, {
-        timeout: 120000,
+        timeout: 180000,
         validateStatus: () => true,
       }),
     );
 
+    const errMsg = res.data?.error?.message;
+    if (errMsg) {
+      this.logger.warn(`Gemini error payload: ${JSON.stringify(res.data)}`);
+      throw new ServiceUnavailableException(String(errMsg));
+    }
+
     if (res.status >= 400) {
-      const body = JSON.stringify(res.data ?? {});
-      this.logger.warn(`Gemini HTTP ${res.status}: ${body}`);
+      const bodyText = JSON.stringify(res.data ?? {});
+      this.logger.warn(`Gemini HTTP ${res.status}: ${bodyText}`);
 
       const messageFromBody =
         (res.data as any)?.error?.message ||
@@ -91,9 +133,24 @@ export class GeminiProvider implements AiProvider {
       throw new ServiceUnavailableException(String(messageFromBody));
     }
 
-    const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+    const cand = res.data?.candidates?.[0];
+    const text = cand?.content?.parts?.[0]?.text;
+    if (!text || !String(text).trim()) {
+      const block = res.data?.promptFeedback?.blockReason;
+      const fr = cand?.finishReason;
+      this.logger.warn(
+        `Gemini пустой ответ finish=${fr} block=${block} raw=${JSON.stringify(res.data).slice(0, 2500)}`,
+      );
+      const parts = [
+        block ? `Запрос отклонён моделью (${block}).` : '',
+        fr ? `Модель не вернула JSON (finish: ${fr}).` : '',
+      ].filter(Boolean);
+      throw new ServiceUnavailableException(
+        parts.length ? parts.join(' ') : 'Gemini вернул пустой ответ. Попробуйте ещё раз.',
+      );
+    }
     try {
-      return JSON.parse(text);
+      return JSON.parse(text) as Record<string, any>;
     } catch {
       throw new BadRequestException('Gemini вернул невалидный JSON');
     }
@@ -213,30 +270,56 @@ export class GeminiProvider implements AiProvider {
   async parseStatementLines(input: ParseStatementInput): Promise<ParsedTransactionDraft[]> {
     const categories = input.context.categories;
     const cards = input.context.cards;
-    const prompt = [
+    const preamble = [
       'Ты разбираешь текст банковской выписки или списка операций.',
       'Верни ТОЛЬКО JSON без markdown в формате:',
       '{"items":[{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue|transfer","paymentMethod":"cash|card","cardId":number,"categoryId":string,"transferToCardId":number,"affectsCardBalance":boolean}]}',
       'Правила:',
       '- В items только отдельные операции (покупки, переводы, зачисления). Без строк «итого», «остаток», «баланс», заголовков таблицы.',
       '- Если в строке только дата без суммы — не включай.',
-      '- Верни все операции из текста (до 250 позиций). Не пропускай строки с суммой и датой/описанием.',
+      '- Из текущего ФРАГМЕНТА верни все подходящие операции (не пропускай строки с суммой).',
       '- Для каждой позиции: title — кратко контрагент/назначение; amount всегда положительное число; type expense для списаний, revenue для поступлений.',
       '- transfer только если явно перевод между счетами; тогда cardId и transferToCardId из списка карт.',
       '- cardId и categoryId только из переданных списков; categoryId подбирай по смыслу.',
       '- Если валюта не указана в фрагменте строки, currencyCode="BYN".',
-      'Текст выписки:',
-      input.sourceText.slice(0, 100000),
       'Карты пользователя:',
       JSON.stringify(cards),
       'Категории пользователя:',
       JSON.stringify(categories),
     ].join('\n');
-    const parsed = await this.callGemini(prompt);
-    const items = Array.isArray(parsed?.items) ? parsed.items : [];
+
+    const full = input.sourceText.slice(0, 100000);
+    const chunks = this.chunkStatementSource(
+      full,
+      this.statementChunkSize,
+      this.statementChunkOverlap,
+    );
+    this.logger.log(`parseStatementLines: ${chunks.length} chunk(s), ${full.length} chars`);
+
+    const merged: Record<string, any>[] = [];
+    const seen = new Set<string>();
+
+    for (let i = 0; i < chunks.length; i++) {
+      const prompt = [
+        preamble,
+        `Сейчас передан только ФРАГМЕНТ выписки (${i + 1} из ${chunks.length}). Извлеки операции только из этого фрагмента; дубликаты между фрагментами допустимы — их уберём на сервере.`,
+        'Фрагмент:',
+        chunks[i],
+      ].join('\n');
+
+      const parsed = await this.callGemini(prompt, { maxOutputTokens: 32768 });
+      const items = Array.isArray(parsed?.items) ? parsed.items : [];
+      for (const row of items) {
+        if (!row || typeof row !== 'object') continue;
+        const k = this.statementRowDedupeKey(row as Record<string, any>);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        merged.push(row as Record<string, any>);
+      }
+    }
+
     const out: ParsedTransactionDraft[] = [];
-    for (const row of items) {
-      if (!row || typeof row !== 'object') continue;
+    for (const row of merged) {
       try {
         out.push(
           this.normalizeParsed(row as Record<string, any>, {
