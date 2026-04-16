@@ -14,6 +14,7 @@ import {
   FinanceQuestionInput,
   FinanceQuestionOutput,
   ParseReceiptInput,
+  ParseStatementInput,
   ParsedTransactionDraft,
   RefineReceiptDraftInput,
 } from '@/ai/types';
@@ -207,6 +208,50 @@ export class GeminiProvider implements AiProvider {
       context: input.context,
       sourceTextForCurrency: input.sourceText,
     });
+  }
+
+  async parseStatementLines(input: ParseStatementInput): Promise<ParsedTransactionDraft[]> {
+    const categories = input.context.categories;
+    const cards = input.context.cards;
+    const prompt = [
+      'Ты разбираешь текст банковской выписки или списка операций.',
+      'Верни ТОЛЬКО JSON без markdown в формате:',
+      '{"items":[{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue|transfer","paymentMethod":"cash|card","cardId":number,"categoryId":string,"transferToCardId":number,"affectsCardBalance":boolean}]}',
+      'Правила:',
+      '- В items только отдельные операции (покупки, переводы, зачисления). Без строк «итого», «остаток», «баланс», заголовков таблицы.',
+      '- Если в строке только дата без суммы — не включай.',
+      '- Не больше 40 позиций; если больше — возьми самые значимые по сумме.',
+      '- Для каждой позиции: title — кратко контрагент/назначение; amount всегда положительное число; type expense для списаний, revenue для поступлений.',
+      '- transfer только если явно перевод между счетами; тогда cardId и transferToCardId из списка карт.',
+      '- cardId и categoryId только из переданных списков; categoryId подбирай по смыслу.',
+      '- Если валюта не указана в фрагменте строки, currencyCode="BYN".',
+      'Текст выписки:',
+      input.sourceText.slice(0, 14000),
+      'Карты пользователя:',
+      JSON.stringify(cards),
+      'Категории пользователя:',
+      JSON.stringify(categories),
+    ].join('\n');
+    const parsed = await this.callGemini(prompt);
+    const items = Array.isArray(parsed?.items) ? parsed.items : [];
+    const out: ParsedTransactionDraft[] = [];
+    for (const row of items) {
+      if (!row || typeof row !== 'object') continue;
+      try {
+        out.push(
+          this.normalizeParsed(row as Record<string, any>, {
+            context: input.context,
+            sourceTextForCurrency: JSON.stringify(row),
+          }),
+        );
+      } catch (e) {
+        this.logger.warn(`parseStatementLines skip row: ${(e as Error).message}`);
+      }
+    }
+    if (out.length === 0) {
+      throw new BadRequestException('Не удалось выделить операции из выписки');
+    }
+    return out.slice(0, 40);
   }
 
   async applyEdit(input: EditDraftInput): Promise<ParsedTransactionDraft> {

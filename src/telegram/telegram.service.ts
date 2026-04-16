@@ -11,6 +11,10 @@ import { Pool } from 'pg';
 import { PG_POOL } from '@/pg/pg.module';
 import { Telegraf } from 'telegraf';
 import { randomBytes } from 'crypto';
+import * as mammoth from 'mammoth';
+// pdf-parse поставляется как CommonJS
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const pdfParse = require('pdf-parse') as (buf: Buffer) => Promise<{ text: string }>;
 import { ReceiptOcrService } from '@/receipt-ocr/receipt-ocr.service';
 import { AiOrchestratorService } from '@/ai/ai-orchestrator.service';
 import { TransactionsService } from '@/models/transactions/transactions.service';
@@ -31,6 +35,24 @@ type UserContext = {
     cardNumber?: string;
   }>;
   categories: Array<{ id: string; title: string; icon: string; color: string }>;
+};
+
+type TelegramSingleDraftRaw = {
+  tx: PendingTx;
+  chatId: number;
+  sourceType: 'text' | 'ocr';
+  awaitingEdit?: boolean;
+};
+
+type TelegramBatchDraftRaw = {
+  kind: 'batch';
+  items: PendingTx[];
+  chatId: number;
+  sourceType: 'statement';
+  /** Индекс строки (0-based), если ждём правку текста для этой позиции. */
+  batchEditLine?: number;
+  /** Сообщение со списком и кнопками — для правки текста без дублирования. */
+  previewMessageId?: number;
 };
 
 type PendingTx = {
@@ -55,6 +77,12 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TelegramService.name);
   private bot: Telegraf | null = null;
   private botUsername: string | null = null;
+  /** Режим следующего вложения: чек (одна операция) или выписка (несколько). Один инстанс процесса. */
+  private readonly attachmentIntent = new Map<
+    number,
+    { kind: 'receipt' | 'statement'; until: number }
+  >();
+  private readonly intentTtlMs = 30 * 60 * 1000;
 
   constructor(
     @Inject(PG_POOL) private readonly pool: Pool,
@@ -161,6 +189,10 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       await this.handlePhotoMessage(ctx);
     });
 
+    this.bot.on('document', async (ctx) => {
+      await this.handleDocumentMessage(ctx);
+    });
+
     this.bot.on('text', async (ctx) => {
       if (ctx.message.text?.startsWith('/start')) return;
       await this.handleTextMessage(ctx);
@@ -175,29 +207,105 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  private setAttachmentIntent(telegramUserId: number, kind: 'receipt' | 'statement'): void {
+    this.attachmentIntent.set(telegramUserId, {
+      kind,
+      until: Date.now() + this.intentTtlMs,
+    });
+  }
+
+  private takeAttachmentIntent(telegramUserId: number): 'receipt' | 'statement' | null {
+    const row = this.attachmentIntent.get(telegramUserId);
+    if (!row || row.until < Date.now()) {
+      this.attachmentIntent.delete(telegramUserId);
+      return null;
+    }
+    this.attachmentIntent.delete(telegramUserId);
+    return row.kind;
+  }
+
+  private peekAttachmentIntent(telegramUserId: number): 'receipt' | 'statement' | null {
+    const row = this.attachmentIntent.get(telegramUserId);
+    if (!row || row.until < Date.now()) {
+      this.attachmentIntent.delete(telegramUserId);
+      return null;
+    }
+    return row.kind;
+  }
+
+  private async downloadTelegramFile(fileId: string): Promise<Buffer> {
+    const fileLink = await this.bot!.telegram.getFileLink(fileId);
+    const response = await fetch(fileLink.toString());
+    if (!response.ok) {
+      throw new ServiceUnavailableException('Не удалось скачать файл из Telegram');
+    }
+    const arr = await response.arrayBuffer();
+    return Buffer.from(arr);
+  }
+
+  private async extractTextFromDocumentBuffer(params: {
+    buffer: Buffer;
+    mime?: string;
+    fileName: string;
+  }): Promise<{ text: string; usedOcr: boolean }> {
+    const name = params.fileName.toLowerCase();
+    const mime = (params.mime || '').toLowerCase();
+
+    if (mime.includes('pdf') || name.endsWith('.pdf')) {
+      const res = await pdfParse(params.buffer);
+      return { text: String(res.text || '').trim(), usedOcr: false };
+    }
+
+    if (
+      mime.includes('wordprocessingml') ||
+      mime.includes('msword') ||
+      name.endsWith('.docx') ||
+      name.endsWith('.doc')
+    ) {
+      if (name.endsWith('.doc') && !name.endsWith('.docx')) {
+        throw new BadRequestException('Формат .doc не поддерживается. Сохраните выписку как .docx или PDF.');
+      }
+      const result = await mammoth.extractRawText({ buffer: params.buffer });
+      return { text: String(result.value || '').trim(), usedOcr: false };
+    }
+
+    if (mime.startsWith('image/')) {
+      const ocr = await this.receiptOcrService.runOcrOnBuffer({
+        buffer: params.buffer,
+        originalname: params.fileName,
+        mimetype: mime || 'application/octet-stream',
+      });
+      return { text: (ocr.full_text || '').trim(), usedOcr: true };
+    }
+
+    throw new BadRequestException(
+      'Неподдерживаемый тип файла. Пришлите PDF, DOCX или изображение (JPEG/PNG).',
+    );
+  }
+
   private async handlePhotoMessage(ctx: any): Promise<void> {
     try {
       const telegramUserId = Number(ctx.from?.id);
       const chatId = Number(ctx.chat?.id);
       const userCtx = await this.getUserContextByTelegramId(telegramUserId);
       this.ensureUserContext(userCtx);
-      await ctx.reply('Фото получено, обрабатываю чек. Это может занять до пары минут...');
+      const intent = this.takeAttachmentIntent(telegramUserId);
+      const asStatement = intent === 'statement';
+
+      await ctx.reply(
+        asStatement
+          ? 'Фото получено, распознаю выписку. Это может занять до пары минут...'
+          : 'Фото получено, обрабатываю чек. Это может занять до пары минут...',
+      );
 
       const photos = ctx.message?.photo ?? [];
       const best = photos.length ? photos[photos.length - 1] : null;
       if (!best?.file_id) {
-        await ctx.reply('Не удалось получить фото. Пришлите изображение чека повторно.');
+        await ctx.reply('Не удалось получить фото. Пришлите изображение повторно.');
         return;
       }
 
-      const fileLink = await ctx.telegram.getFileLink(best.file_id);
-      const response = await fetch(fileLink.toString());
-      if (!response.ok) {
-        throw new ServiceUnavailableException('Не удалось скачать фото из Telegram');
-      }
-
-      const arr = await response.arrayBuffer();
-      const buffer = Buffer.from(arr);
+      const buffer = await this.downloadTelegramFile(best.file_id);
       const ocr = await this.receiptOcrService.runOcrOnBuffer({
         buffer,
         originalname: `telegram_${best.file_id}.jpg`,
@@ -210,7 +318,67 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      await this.buildPreviewAndSend(chatId, userCtx, sourceText, 'ocr');
+      if (asStatement) {
+        await this.buildStatementBatchPreview(chatId, userCtx, sourceText);
+      } else {
+        await this.buildPreviewAndSend(chatId, userCtx, sourceText, 'ocr');
+      }
+    } catch (error) {
+      await this.replyPipelineError(ctx, error);
+    }
+  }
+
+  private async handleDocumentMessage(ctx: any): Promise<void> {
+    try {
+      const telegramUserId = Number(ctx.from?.id);
+      const chatId = Number(ctx.chat?.id);
+      const userCtx = await this.getUserContextByTelegramId(telegramUserId);
+      this.ensureUserContext(userCtx);
+
+      const doc = ctx.message?.document;
+      if (!doc?.file_id) {
+        await ctx.reply('Не удалось получить файл.');
+        return;
+      }
+
+      const intent = this.takeAttachmentIntent(telegramUserId);
+      const fileName = String(doc.file_name || 'upload.bin');
+      const mime = String(doc.mime_type || '');
+
+      let asStatement: boolean;
+      if (intent === 'statement') {
+        asStatement = true;
+      } else if (intent === 'receipt') {
+        asStatement = false;
+      } else {
+        asStatement =
+          mime.includes('pdf') ||
+          fileName.toLowerCase().endsWith('.pdf') ||
+          mime.includes('wordprocessingml') ||
+          fileName.toLowerCase().endsWith('.docx');
+      }
+
+      await ctx.reply('Файл получен, извлекаю текст...');
+
+      const buffer = await this.downloadTelegramFile(doc.file_id);
+      const { text: sourceText } = await this.extractTextFromDocumentBuffer({
+        buffer,
+        mime,
+        fileName,
+      });
+
+      if (!sourceText) {
+        await ctx.reply('В файле не найден текст для разбора. Попробуйте другой файл или фото.');
+        return;
+      }
+
+      if (asStatement) {
+        await ctx.reply('Разбираю выписку на операции (AI)...');
+        await this.buildStatementBatchPreview(chatId, userCtx, sourceText);
+      } else {
+        await ctx.reply('Формирую одну транзакцию по содержимому...');
+        await this.buildPreviewAndSend(chatId, userCtx, sourceText, mime.startsWith('image/') ? 'ocr' : 'text');
+      }
     } catch (error) {
       await this.replyPipelineError(ctx, error);
     }
@@ -225,7 +393,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
       const sourceText = String(ctx.message?.text || '').trim();
       if (!sourceText) {
-        await ctx.reply('Отправьте текст или фото чека.');
+        await ctx.reply('Отправьте текст, фото чека или файл выписки (PDF / DOCX).');
         return;
       }
       const lower = sourceText.toLowerCase();
@@ -241,7 +409,72 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                 ? '/risk'
                 : lower === 'ℹ️ помощь'
                   ? '/help'
-                  : sourceText;
+                  : lower === '📷 чек (фото/файл)' || lower === '📷 чек (фото или файл)'
+                    ? '/receipt_attach'
+                    : lower === '📄 выписка (pdf/docx)' || lower === '📄 выписка (pdf/docx/фото)'
+                      ? '/statement_attach'
+                      : sourceText;
+
+      const batchLineDraft = await this.getPendingBatchLineEditDraft(userCtx.userId);
+      if (batchLineDraft) {
+        const lineIndex = batchLineDraft.batchEditLine;
+        if (lineIndex < 0 || lineIndex >= batchLineDraft.raw.items.length) {
+          const cleared: TelegramBatchDraftRaw = { ...batchLineDraft.raw };
+          delete cleared.batchEditLine;
+          await this.pool.query(
+            `UPDATE transaction_drafts SET raw_data = $3::jsonb WHERE id = $1 AND user_id = $2`,
+            [batchLineDraft.draftId, userCtx.userId, JSON.stringify(cleared)],
+          );
+          await ctx.reply('Редактирование сброшено. Отправьте выписку заново или выберите позицию снова.');
+          return;
+        }
+        const categoriesForPrompt = userCtx.categories.map((c) => ({ id: c.id, title: c.title }));
+        const fallbackCategoryId =
+          categoriesForPrompt[0]?.id ?? batchLineDraft.raw.items[lineIndex].categoryId ?? '';
+        const cardsForPrompt = userCtx.cards.map((c) => ({
+          id: c.id,
+          name: c.name,
+          currencyCode: c.currencyCode,
+        }));
+        const currentTx = batchLineDraft.raw.items[lineIndex];
+        const updated = await this.aiService.applyEdit({
+          editText: sourceText,
+          currentTx,
+          context: {
+            userId: userCtx.userId,
+            primaryCardId: userCtx.primaryCardId!,
+            cards: cardsForPrompt,
+            categories: categoriesForPrompt,
+            fallbackCategoryId,
+          },
+        });
+        const nextItems = [...batchLineDraft.raw.items];
+        nextItems[lineIndex] = { ...updated, userId: userCtx.userId };
+        const nextRaw: TelegramBatchDraftRaw = {
+          ...batchLineDraft.raw,
+          items: nextItems,
+        };
+        delete nextRaw.batchEditLine;
+        await this.pool.query(
+          `UPDATE transaction_drafts SET raw_data = $3::jsonb WHERE id = $1 AND user_id = $2`,
+          [batchLineDraft.draftId, userCtx.userId, JSON.stringify(nextRaw)],
+        );
+        const mid = batchLineDraft.raw.previewMessageId;
+        const edited =
+          typeof mid === 'number' &&
+          (await this.tryEditBatchPreviewMessage(
+            chatId,
+            mid,
+            batchLineDraft.draftId,
+            userCtx,
+            nextItems,
+          ));
+        if (!edited) {
+          await this.sendBatchPreviewMessage(chatId, batchLineDraft.draftId, userCtx, nextItems);
+        }
+        await ctx.reply('Правки к позиции применены. Список обновлён.');
+        return;
+      }
 
       if (normalizedText === '/help' || normalizedText === '/start') {
         await ctx.reply(this.buildHelpText(), {
@@ -328,6 +561,20 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         await this.sendDraftPreview(chatId, userCtx, editable.draftId, updated);
         return;
       }
+      if (normalizedText === '/receipt_attach') {
+        this.setAttachmentIntent(telegramUserId, 'receipt');
+        await ctx.reply(
+          'Режим «чек»: пришлите фото чека, картинку файла или PDF с одним чеком — будет одна транзакция с подтверждением.',
+        );
+        return;
+      }
+      if (normalizedText === '/statement_attach') {
+        this.setAttachmentIntent(telegramUserId, 'statement');
+        await ctx.reply(
+          'Режим «выписка»: пришлите PDF, DOCX или фото/скан списка операций — бот разобьёт на несколько транзакций. Перед созданием можно удалить или отредактировать строки.',
+        );
+        return;
+      }
       if (normalizedText === '/add') {
         await ctx.reply(
           'Введите текст транзакции следующим сообщением или сразу используйте /add <описание>. Пример: /add кофе 7 byn',
@@ -371,6 +618,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       '/risk — сигналы высокого риска',
       '/recompute — пересчитать инсайты',
       '',
+      'Кнопки «Чек» и «Выписка»: сначала нажмите кнопку, затем пришлите фото или файл (PDF, DOCX).',
+      'Без кнопки: фото чека — одна транзакция; PDF/DOCX — разбор выписки на несколько операций.',
+      '',
       'По умолчанию обычный текст без команды считается вопросом ассистенту.',
     ].join('\n');
   }
@@ -382,6 +632,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     return {
       keyboard: [
         [{ text: '➕ Добавить транзакцию' }, { text: '🤖 Спросить у AI' }],
+        [{ text: '📷 Чек (фото/файл)' }, { text: '📄 Выписка (PDF/DOCX)' }],
         [{ text: '📊 Инсайты' }, { text: '⚠️ Риски' }],
         [{ text: 'ℹ️ Помощь' }],
       ],
@@ -393,14 +644,179 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     try {
       const telegramUserId = Number(ctx.from?.id);
       const data = String(ctx.callbackQuery?.data || '');
-      const [action, draftId] = data.split(':');
+      const splitIdx = data.indexOf(':');
+      if (splitIdx < 0) {
+        await ctx.answerCbQuery('Некорректная команда');
+        return;
+      }
+      const action = data.slice(0, splitIdx);
+      const rest = data.slice(splitIdx + 1);
 
-      if (!action || !draftId) {
+      const userCtx = await this.getUserContextByTelegramId(telegramUserId);
+      this.ensureUserContext(userCtx);
+
+      if (action === 'bcf' || action === 'bca' || action === 'bdm' || action === 'bed') {
+        const lastColon = rest.lastIndexOf(':');
+        const isTriple = action === 'bdm' || action === 'bed';
+        const draftId = isTriple ? rest.slice(0, lastColon) : rest;
+        const indexPart = isTriple ? rest.slice(lastColon + 1) : '';
+        const lineIndex = isTriple ? Number.parseInt(indexPart, 10) : NaN;
+
+        const batch = await this.getPendingBatchDraft(userCtx.userId, draftId);
+        if (!batch) {
+          await ctx.answerCbQuery('Запрос устарел');
+          await ctx.reply('Черновик не найден. Отправьте файл заново.');
+          return;
+        }
+
+        if (action === 'bca') {
+          await this.pool.query(
+            `UPDATE transaction_drafts SET status = 'rejected' WHERE id = $1 AND user_id = $2`,
+            [draftId, userCtx.userId],
+          );
+          await ctx.answerCbQuery('Отменено');
+          await ctx.reply('Импорт выписки отменён.');
+          try {
+            await ctx.editMessageText(
+              `${this.formatBatchPreviewBody(userCtx, batch.raw.items)}\n\n❌ Отменено пользователем.`,
+            );
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+
+        if (action === 'bcf') {
+          const { items } = batch.raw;
+          let ok = 0;
+          const errors: string[] = [];
+          for (const tx of items) {
+            try {
+              await this.transactionsService.createTransaction({
+                userId: tx.userId,
+                cardId: String(tx.cardId),
+                ...(tx.type === 'transfer'
+                  ? {
+                      type: 'transfer' as const,
+                      transferToCardId: String(tx.transferToCardId),
+                    }
+                  : {
+                      categoryId: tx.categoryId ?? '',
+                      type: tx.type,
+                    }),
+                amount: tx.amount,
+                title: tx.title,
+                description: tx.description,
+                date: tx.date,
+                currencyCode: tx.currencyCode,
+                paymentMethod: tx.paymentMethod,
+                affectsCardBalance: tx.affectsCardBalance !== false,
+              });
+              ok += 1;
+            } catch (e) {
+              errors.push(`${tx.title}: ${(e as Error).message}`);
+            }
+          }
+          if (ok === 0) {
+            await ctx.answerCbQuery('Ошибка создания');
+            await ctx.reply(
+              `Не удалось создать ни одной транзакции.\n${errors.slice(0, 5).join('\n') || 'Неизвестная ошибка'}`,
+            );
+            return;
+          }
+          await this.pool.query(
+            `UPDATE transaction_drafts SET status = 'confirmed' WHERE id = $1 AND user_id = $2`,
+            [draftId, userCtx.userId],
+          );
+          await ctx.answerCbQuery('Создано');
+          let summary = `Создано транзакций: ${ok} из ${items.length}.`;
+          if (errors.length) summary += `\n\nНе создано:\n${errors.slice(0, 8).join('\n')}`;
+          await ctx.reply(summary);
+          try {
+            await ctx.editMessageText(
+              `${this.formatBatchPreviewBody(userCtx, batch.raw.items)}\n\n✅ ${summary}`,
+            );
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+
+        if (action === 'bdm') {
+          if (!Number.isFinite(lineIndex) || lineIndex < 0 || lineIndex >= batch.raw.items.length) {
+            await ctx.answerCbQuery('Некорректная строка');
+            return;
+          }
+          const nextItems = batch.raw.items.filter((_, i) => i !== lineIndex);
+          if (nextItems.length === 0) {
+            await this.pool.query(
+              `UPDATE transaction_drafts SET status = 'rejected' WHERE id = $1 AND user_id = $2`,
+              [draftId, userCtx.userId],
+            );
+            await ctx.answerCbQuery('Список пуст');
+            await ctx.reply('Все позиции удалены — черновик отменён.');
+            try {
+              await ctx.editMessageText(
+                `${this.formatBatchPreviewBody(userCtx, batch.raw.items)}\n\n❌ Черновик отменён (список пуст).`,
+              );
+            } catch {
+              /* ignore */
+            }
+            return;
+          }
+          const nextRaw: TelegramBatchDraftRaw = {
+            kind: 'batch',
+            items: nextItems,
+            chatId: batch.raw.chatId,
+            sourceType: 'statement',
+          };
+          await this.pool.query(
+            `UPDATE transaction_drafts SET raw_data = $3::jsonb, amount = $4, title = $5 WHERE id = $1 AND user_id = $2`,
+            [
+              draftId,
+              userCtx.userId,
+              JSON.stringify(nextRaw),
+              this.sumDraftAmounts(nextItems),
+              `Выписка: ${nextItems.length} операций`,
+            ],
+          );
+          await ctx.answerCbQuery('Удалено');
+          const previewText = this.formatBatchPreviewBody(userCtx, nextItems);
+          const kb = this.buildBatchInlineKeyboard(draftId, nextItems.length);
+          try {
+            await ctx.editMessageText(previewText, { reply_markup: { inline_keyboard: kb } });
+          } catch {
+            await this.bot?.telegram.sendMessage(batch.raw.chatId, previewText, {
+              reply_markup: { inline_keyboard: kb },
+            });
+          }
+          return;
+        }
+
+        if (action === 'bed') {
+          if (!Number.isFinite(lineIndex) || lineIndex < 0 || lineIndex >= batch.raw.items.length) {
+            await ctx.answerCbQuery('Некорректная строка');
+            return;
+          }
+          const nextRaw: TelegramBatchDraftRaw = { ...batch.raw, batchEditLine: lineIndex };
+          await this.pool.query(
+            `UPDATE transaction_drafts SET raw_data = $3::jsonb WHERE id = $1 AND user_id = $2`,
+            [draftId, userCtx.userId, JSON.stringify(nextRaw)],
+          );
+          await ctx.answerCbQuery('Жду правки');
+          await ctx.reply(
+            `Редактирование позиции ${lineIndex + 1}. Напишите одним сообщением, что изменить (сумма, дата, категория, название).`,
+          );
+          return;
+        }
+      }
+
+      const draftId = rest;
+      if (!draftId) {
         await ctx.answerCbQuery('Некорректная команда');
         return;
       }
 
-      const userCtx = await this.getUserContextByTelegramId(telegramUserId);
       const pending = await this.getPendingDraft(userCtx.userId, draftId);
       if (!pending) {
         await ctx.answerCbQuery('Запрос устарел');
@@ -634,6 +1050,193 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  private sumDraftAmounts(items: PendingTx[]): number {
+    const s = items.reduce((acc, t) => acc + Number(t.amount), 0);
+    return Math.round(s * 100) / 100;
+  }
+
+  private formatBatchPreviewBody(userCtx: UserContext, items: PendingTx[], maxLines = 40): string {
+    const lines = items.map((tx, i) => {
+      const catTitle =
+        tx.type === 'transfer'
+          ? 'Перевод'
+          : userCtx.categories.find((c) => c.id === tx.categoryId)?.title || '—';
+      const title = String(tx.title).slice(0, 44);
+      return `${i + 1}. ${title} — ${tx.amount} ${tx.currencyCode} | ${tx.type} | ${tx.date} | ${catTitle}`;
+    });
+    const head = `Выписка: ${items.length} операций. Проверьте список:\n`;
+    if (lines.length <= maxLines) return head + lines.join('\n');
+    return (
+      head +
+      lines.slice(0, maxLines).join('\n') +
+      `\n… всего в импорте ${items.length} операций (сообщение сокращено; кнопки — для всех позиций).`
+    );
+  }
+
+  private buildBatchInlineKeyboard(
+    draftId: string,
+    itemCount: number,
+  ): Array<Array<{ text: string; callback_data: string }>> {
+    const rows: Array<Array<{ text: string; callback_data: string }>> = [
+      [
+        { text: '✅ Создать все', callback_data: `bcf:${draftId}` },
+        { text: '❌ Отмена', callback_data: `bca:${draftId}` },
+      ],
+    ];
+    for (let i = 0; i < itemCount; i++) {
+      rows.push([
+        { text: `✏️ ${i + 1}`, callback_data: `bed:${draftId}:${i}` },
+        { text: `🗑 ${i + 1}`, callback_data: `bdm:${draftId}:${i}` },
+      ]);
+    }
+    return rows;
+  }
+
+  private async sendBatchPreviewMessage(
+    chatId: number,
+    draftId: string,
+    userCtx: UserContext,
+    items: PendingTx[],
+  ): Promise<void> {
+    const body = this.formatBatchPreviewBody(userCtx, items).slice(0, 4090);
+    this.logger.log(`Telegram batch preview [draft=${draftId}]: ${items.length} items`);
+    const msg = await this.bot!.telegram.sendMessage(chatId, body, {
+      reply_markup: { inline_keyboard: this.buildBatchInlineKeyboard(draftId, items.length) },
+    });
+    await this.pool.query(
+      `UPDATE transaction_drafts SET raw_data = raw_data || $2::jsonb WHERE id = $1 AND user_id = $3`,
+      [draftId, JSON.stringify({ previewMessageId: msg.message_id }), userCtx.userId],
+    );
+  }
+
+  private async tryEditBatchPreviewMessage(
+    chatId: number,
+    previewMessageId: number,
+    draftId: string,
+    userCtx: UserContext,
+    items: PendingTx[],
+  ): Promise<boolean> {
+    if (!this.bot) return false;
+    const body = this.formatBatchPreviewBody(userCtx, items).slice(0, 4090);
+    try {
+      await this.bot.telegram.editMessageText(chatId, previewMessageId, undefined, body, {
+        reply_markup: { inline_keyboard: this.buildBatchInlineKeyboard(draftId, items.length) },
+      });
+      return true;
+    } catch (e) {
+      this.logger.warn(`Telegram edit batch preview: ${(e as Error).message}`);
+      return false;
+    }
+  }
+
+  private async buildStatementBatchPreview(
+    chatId: number,
+    userCtx: UserContext,
+    sourceText: string,
+  ): Promise<void> {
+    const categoriesForPrompt = userCtx.categories.map((c) => ({ id: c.id, title: c.title }));
+    const fallbackCategoryId = categoriesForPrompt[0]?.id || '';
+    if (!fallbackCategoryId) {
+      throw new BadRequestException('Не найдены категории пользователя.');
+    }
+
+    const parsedAll = await this.aiService.parseStatementLines({
+      sourceText,
+      context: {
+        userId: userCtx.userId,
+        primaryCardId: userCtx.primaryCardId!,
+        cards: userCtx.cards.map((c) => ({ id: c.id, name: c.name, currencyCode: c.currencyCode })),
+        categories: categoriesForPrompt,
+        fallbackCategoryId,
+      },
+    });
+
+    const parsed = parsedAll.slice(0, 30);
+    const truncated = parsedAll.length > parsed.length;
+
+    const items: PendingTx[] = parsed.map((p) => ({
+      ...p,
+      userId: userCtx.userId,
+      date: this.normalizeDateForInput(sourceText, p.date),
+    }));
+
+    const first = items[0];
+    const draftTitle = truncated
+      ? `Выписка: ${items.length} из ${parsedAll.length} операций`
+      : `Выписка: ${items.length} операций`;
+    const batchRaw: TelegramBatchDraftRaw = {
+      kind: 'batch',
+      items,
+      chatId,
+      sourceType: 'statement',
+    };
+
+    const { rows } = await this.pool.query(
+      `INSERT INTO transaction_drafts (
+        user_id, source, card_id, category_id, type, amount, currency_code,
+        title, description, date, raw_data, status, expires_at
+      ) VALUES ($1, 'telegram', $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, 'pending', NOW() + INTERVAL '45 minutes')
+      RETURNING id`,
+      [
+        userCtx.userId,
+        first.cardId,
+        first.type === 'transfer' ? null : first.categoryId ?? null,
+        first.type,
+        this.sumDraftAmounts(items),
+        first.currencyCode,
+        draftTitle,
+        null,
+        first.date,
+        JSON.stringify(batchRaw),
+      ],
+    );
+    const draftId = String(rows[0].id);
+    await this.sendBatchPreviewMessage(chatId, draftId, userCtx, items);
+  }
+
+  private async getPendingBatchDraft(
+    userId: string,
+    draftId: string,
+  ): Promise<{ raw: TelegramBatchDraftRaw } | null> {
+    const { rows } = await this.pool.query(
+      `SELECT raw_data
+       FROM transaction_drafts
+       WHERE id = $1
+         AND user_id = $2
+         AND source = 'telegram'
+         AND status = 'pending'
+         AND (expires_at IS NULL OR expires_at > NOW())
+       LIMIT 1`,
+      [draftId, userId],
+    );
+    if (rows.length === 0) return null;
+    const raw = rows[0].raw_data as TelegramBatchDraftRaw;
+    if (raw?.kind !== 'batch' || !Array.isArray(raw.items) || raw.items.length === 0) return null;
+    return { raw };
+  }
+
+  private async getPendingBatchLineEditDraft(
+    userId: string,
+  ): Promise<{ draftId: string; raw: TelegramBatchDraftRaw; batchEditLine: number } | null> {
+    const { rows } = await this.pool.query(
+      `SELECT id, raw_data
+       FROM transaction_drafts
+       WHERE user_id = $1
+         AND source = 'telegram'
+         AND status = 'pending'
+         AND raw_data->>'kind' = 'batch'
+         AND jsonb_typeof(raw_data->'batchEditLine') = 'number'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [userId],
+    );
+    if (rows.length === 0) return null;
+    const raw = rows[0].raw_data as TelegramBatchDraftRaw;
+    const line = raw.batchEditLine;
+    if (typeof line !== 'number' || line < 0 || line >= raw.items.length) return null;
+    return { draftId: String(rows[0].id), raw, batchEditLine: line };
+  }
+
   private resolveCardDisplayName(userCtx: UserContext, cardId: number): string {
     const card = userCtx.cards.find((c) => c.id === cardId);
     if (!card) return `Карта #${cardId}`;
@@ -667,11 +1270,12 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
          AND source = 'telegram'
          AND status = 'pending'
          AND (expires_at IS NULL OR expires_at > NOW())
+         AND (raw_data->>'kind' IS NULL OR raw_data->>'kind' <> 'batch')
        LIMIT 1`,
       [draftId, userId],
     );
     if (rows.length === 0) return null;
-    const raw = rows[0].raw_data as { tx?: PendingTx; chatId?: number };
+    const raw = rows[0].raw_data as TelegramSingleDraftRaw;
     if (!raw?.tx || !raw?.chatId) return null;
     return { tx: raw.tx, chatId: Number(raw.chatId) };
   }
@@ -686,6 +1290,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
          AND source = 'telegram'
          AND status = 'pending'
          AND (raw_data->>'awaitingEdit')::boolean = true
+         AND (raw_data->>'kind' IS NULL OR raw_data->>'kind' <> 'batch')
        ORDER BY created_at DESC
        LIMIT 1`,
       [userId],
@@ -699,7 +1304,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
   private async updateDraftRawData(
     userId: string,
     draftId: string,
-    rawData: { tx: PendingTx; chatId: number; sourceType: 'text' | 'ocr'; awaitingEdit?: boolean },
+    rawData: TelegramSingleDraftRaw,
   ): Promise<void> {
     await this.pool.query(
       `UPDATE transaction_drafts

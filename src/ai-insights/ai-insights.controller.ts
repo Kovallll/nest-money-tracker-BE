@@ -32,7 +32,38 @@ export class AiInsightsController {
 
   @Post('chat')
   async ask(@Req() req: { user: { id: string } }, @Body() dto: AskAiDto) {
-    return this.aiInsights.ask(req.user.id, dto.question, 'app');
+    return this.aiInsights.ask(req.user.id, dto.question, 'app', dto.sessionId);
+  }
+
+  @Get('chat/sessions')
+  async sessions(@Req() req: { user: { id: string } }, @Query('limit') limit?: string) {
+    return this.aiInsights.getChatSessions(req.user.id, {
+      channel: 'app',
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
+  @Post('chat/sessions')
+  async createSession(@Req() req: { user: { id: string } }) {
+    return this.aiInsights.createChatSession(req.user.id, 'app');
+  }
+
+  @Post('chat/sessions/:id/clear')
+  async clearSession(@Req() req: { user: { id: string } }, @Param('id') id: string) {
+    return this.aiInsights.clearChatSession(req.user.id, id);
+  }
+
+  @Get('chat/history')
+  async history(
+    @Req() req: { user: { id: string } },
+    @Query('limit') limit?: string,
+    @Query('sessionId') sessionId?: string,
+  ) {
+    return this.aiInsights.getChatHistory(req.user.id, {
+      channel: 'app',
+      limit: limit ? Number(limit) : undefined,
+      sessionId: sessionId?.trim() || undefined,
+    });
   }
 
   @Get('metrics')

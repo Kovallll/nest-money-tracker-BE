@@ -38,3 +38,21 @@ export interface ChatResponse {
   usedFallback: boolean;
 }
 
+export interface ChatHistoryMessage {
+  id: string;
+  sessionId: string;
+  role: 'user' | 'assistant';
+  message: string;
+  refs: ChatReference[];
+  createdAt: string;
+}
+
+export interface ChatSessionItem {
+  id: string;
+  channel: 'app' | 'telegram';
+  createdAt: string;
+  updatedAt: string;
+  lastMessageAt?: string | null;
+  messagesCount: number;
+}
+

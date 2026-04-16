@@ -23,6 +23,12 @@ export type ParseReceiptInput = {
   sourceType: 'ocr' | 'text';
 };
 
+/** Текст выписки / банковского отчёта → несколько операций. */
+export type ParseStatementInput = {
+  context: AiUserContext;
+  sourceText: string;
+};
+
 export type ParsedTransactionDraft = {
   userId: string;
   cardId: number;
@@ -143,6 +149,8 @@ export type FinanceQuestionOutput = {
 
 export interface AiProvider {
   parseReceipt(input: ParseReceiptInput): Promise<ParsedTransactionDraft>;
+  /** Разбор выписки: только реальные операции со счёта, без заголовков и итогов. */
+  parseStatementLines(input: ParseStatementInput): Promise<ParsedTransactionDraft[]>;
   applyEdit(input: EditDraftInput): Promise<ParsedTransactionDraft>;
   refineReceiptDraft(input: RefineReceiptDraftInput): Promise<ParsedTransactionDraft>;
   generateDailyActivitySummary(

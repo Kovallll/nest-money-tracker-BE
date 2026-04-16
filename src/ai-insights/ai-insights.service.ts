@@ -1,7 +1,14 @@
 import { Injectable, Inject, Logger, OnModuleInit } from '@nestjs/common';
 import { Pool } from 'pg';
 import { PG_POOL } from '@/pg/pg.module';
-import { AiInsightItem, ChatReference, ChatResponse, InsightType } from '@/ai-insights/types';
+import {
+  AiInsightItem,
+  ChatHistoryMessage,
+  ChatReference,
+  ChatResponse,
+  ChatSessionItem,
+  InsightType,
+} from '@/ai-insights/types';
 import { ExchangeRatesService } from '@/common/exchange-rates.service';
 import { Cron } from '@nestjs/schedule';
 import { AiOrchestratorService } from '@/ai/ai-orchestrator.service';
@@ -21,6 +28,15 @@ type InsightRow = {
   not_financial_advice: boolean;
   created_at: Date | string;
   expires_at: Date | string | null;
+};
+
+type ChatMessageRow = {
+  id: string;
+  session_id: string;
+  role: 'user' | 'assistant';
+  message: string;
+  refs: ChatReference[] | null;
+  created_at: Date | string;
 };
 
 @Injectable()
@@ -217,7 +233,12 @@ export class AiInsightsService implements OnModuleInit {
     return { created };
   }
 
-  async ask(userId: string, question: string, channel: 'app' | 'telegram' = 'app'): Promise<ChatResponse> {
+  async ask(
+    userId: string,
+    question: string,
+    channel: 'app' | 'telegram' = 'app',
+    sessionId?: string,
+  ): Promise<ChatResponse> {
     const flags = await this.getUserAiFlags(userId);
     if (!flags.aiChatEnabled) {
       return {
@@ -227,10 +248,12 @@ export class AiInsightsService implements OnModuleInit {
       };
     }
 
-    const sessionId = await this.ensureSession(userId, channel);
-    await this.appendMessage(sessionId, 'user', question, []);
+    const resolvedSessionId = await this.ensureSession(userId, channel, sessionId);
+    const recentMessages = await this.getRecentSessionMessages(resolvedSessionId, 8);
+    const contextualQuestion = this.buildContextualQuestion(question, recentMessages);
+    await this.appendMessage(resolvedSessionId, 'user', question, []);
 
-    const normalized = question.toLowerCase();
+    const normalized = contextualQuestion.toLowerCase();
     const activeInsights = await this.getInsights(userId, { status: 'active' });
     const refs: ChatReference[] = activeInsights.slice(0, 3).map((x) => ({
       kind: 'insight',
@@ -263,7 +286,7 @@ export class AiInsightsService implements OnModuleInit {
       const topTx = await this.getTopExpenseTransactions(userId, period.startDate, 3);
       if (!topTx.length) {
         const noDataAnswer = `За период "${period.label}" нет расходных транзакций, поэтому топ сформировать нельзя.`;
-        await this.appendMessage(sessionId, 'assistant', noDataAnswer, refs);
+        await this.appendMessage(resolvedSessionId, 'assistant', noDataAnswer, refs);
         return { answer: noDataAnswer, references: refs, usedFallback: false };
       }
       const answer = [
@@ -275,7 +298,7 @@ export class AiInsightsService implements OnModuleInit {
             })`,
         ),
       ].join('\n');
-      await this.appendMessage(sessionId, 'assistant', answer, refs);
+      await this.appendMessage(resolvedSessionId, 'assistant', answer, refs);
       return { answer, references: refs, usedFallback: false };
     }
 
@@ -289,7 +312,7 @@ export class AiInsightsService implements OnModuleInit {
       const subs = await this.getActiveSubscriptionsImpact(userId);
       if (subs.count === 0) {
         const answer = 'Сейчас у вас нет активных подписок, которые регулярно расходуют бюджет.';
-        await this.appendMessage(sessionId, 'assistant', answer, refs);
+        await this.appendMessage(resolvedSessionId, 'assistant', answer, refs);
         return { answer, references: refs, usedFallback: false };
       }
       const share =
@@ -297,7 +320,7 @@ export class AiInsightsService implements OnModuleInit {
       const answer = `Активных подписок: ${subs.count}. Их суммарная регулярная нагрузка ~${subs.monthlyTotal.toFixed(
         2,
       )} в месяц (${share.toFixed(1)}% от ваших расходов за текущий месяц).`;
-      await this.appendMessage(sessionId, 'assistant', answer, refs);
+      await this.appendMessage(resolvedSessionId, 'assistant', answer, refs);
       return { answer, references: refs, usedFallback: false };
     }
     const asksTopCategory =
@@ -312,7 +335,7 @@ export class AiInsightsService implements OnModuleInit {
       const topByPeriod = await this.getTopExpenseCategoriesByPeriod(userId, period.startDate, 3);
       if (!topByPeriod.length) {
         const noDataAnswer = `За период "${period.label}" нет расходов по категориям, поэтому топ-категорию определить нельзя.`;
-        await this.appendMessage(sessionId, 'assistant', noDataAnswer, refs);
+        await this.appendMessage(resolvedSessionId, 'assistant', noDataAnswer, refs);
         return { answer: noDataAnswer, references: refs, usedFallback: false };
       }
       const top = topByPeriod[0];
@@ -322,7 +345,7 @@ export class AiInsightsService implements OnModuleInit {
         .slice(1, 3)
         .map((x) => `"${x.category}" ${x.total.toFixed(2)}`)
         .join(', ')}.`;
-      await this.appendMessage(sessionId, 'assistant', answer, refs);
+      await this.appendMessage(resolvedSessionId, 'assistant', answer, refs);
       return { answer, references: refs, usedFallback: false };
     }
 
@@ -331,7 +354,7 @@ export class AiInsightsService implements OnModuleInit {
     try {
       const rates = this.exchangeRates.getRateToByn();
       const aiResponse = await this.ai.answerFinanceQuestion({
-        question,
+        question: contextualQuestion,
         userContext: {
           ...financeContext,
           activeInsights: activeInsights.slice(0, 5).map((x) => ({
@@ -387,8 +410,106 @@ export class AiInsightsService implements OnModuleInit {
       usedFallback = true;
     }
 
-    await this.appendMessage(sessionId, 'assistant', answer, refs);
+    await this.appendMessage(resolvedSessionId, 'assistant', answer, refs);
     return { answer, references: refs, usedFallback };
+  }
+
+  async getChatHistory(
+    userId: string,
+    options?: { channel?: 'app' | 'telegram'; limit?: number; sessionId?: string },
+  ): Promise<ChatHistoryMessage[]> {
+    const channel = options?.channel ?? 'app';
+    const limit = Math.max(1, Math.min(200, Number(options?.limit) || 50));
+    const session = options?.sessionId
+      ? await this.resolveExistingSession(userId, options.sessionId, channel)
+      : await this.getLatestSession(userId, channel);
+    if (!session?.id) return [];
+    const { rows } = await this.pool.query<ChatMessageRow>(
+      `SELECT m.id, m.session_id, m.role, m.message, m.refs, m.created_at
+       FROM ai_chat_messages m
+       WHERE m.session_id = $1
+       ORDER BY m.created_at DESC
+       LIMIT $2`,
+      [session.id, limit],
+    );
+    return rows.reverse().map((r) => ({
+      id: r.id,
+      sessionId: r.session_id,
+      role: r.role,
+      message: r.message,
+      refs: Array.isArray(r.refs) ? r.refs : [],
+      createdAt: this.toIso(r.created_at),
+    }));
+  }
+
+  async getChatSessions(
+    userId: string,
+    options?: { channel?: 'app' | 'telegram'; limit?: number },
+  ): Promise<ChatSessionItem[]> {
+    const channel = options?.channel ?? 'app';
+    const limit = Math.max(1, Math.min(100, Number(options?.limit) || 30));
+    const { rows } = await this.pool.query<{
+      id: string;
+      channel: 'app' | 'telegram';
+      created_at: Date | string;
+      updated_at: Date | string;
+      last_message_at: Date | string | null;
+      messages_count: string;
+    }>(
+      `SELECT
+         s.id,
+         s.channel,
+         s.created_at,
+         s.updated_at,
+         MAX(m.created_at) AS last_message_at,
+         COUNT(m.id)::text AS messages_count
+       FROM ai_chat_sessions s
+       LEFT JOIN ai_chat_messages m ON m.session_id = s.id
+       WHERE s.user_id = $1 AND s.channel = $2
+       GROUP BY s.id, s.channel, s.created_at, s.updated_at
+       ORDER BY COALESCE(MAX(m.created_at), s.updated_at) DESC
+       LIMIT $3`,
+      [userId, channel, limit],
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      channel: r.channel,
+      createdAt: this.toIso(r.created_at),
+      updatedAt: this.toIso(r.updated_at),
+      lastMessageAt: r.last_message_at ? this.toIso(r.last_message_at) : null,
+      messagesCount: Number(r.messages_count ?? 0),
+    }));
+  }
+
+  async createChatSession(userId: string, channel: 'app' | 'telegram' = 'app'): Promise<ChatSessionItem> {
+    const { rows } = await this.pool.query<{
+      id: string;
+      channel: 'app' | 'telegram';
+      created_at: Date | string;
+      updated_at: Date | string;
+    }>(
+      `INSERT INTO ai_chat_sessions (user_id, channel)
+       VALUES ($1, $2)
+       RETURNING id, channel, created_at, updated_at`,
+      [userId, channel],
+    );
+    const r = rows[0];
+    return {
+      id: r.id,
+      channel: r.channel,
+      createdAt: this.toIso(r.created_at),
+      updatedAt: this.toIso(r.updated_at),
+      lastMessageAt: null,
+      messagesCount: 0,
+    };
+  }
+
+  async clearChatSession(userId: string, sessionId: string): Promise<{ success: boolean }> {
+    const session = await this.resolveExistingSession(userId, sessionId, 'app');
+    if (!session?.id) return { success: false };
+    await this.pool.query(`DELETE FROM ai_chat_messages WHERE session_id = $1`, [session.id]);
+    await this.pool.query(`UPDATE ai_chat_sessions SET updated_at = NOW() WHERE id = $1`, [session.id]);
+    return { success: true };
   }
 
   async getUserMetrics(userId: string): Promise<{
@@ -457,7 +578,45 @@ export class AiInsightsService implements OnModuleInit {
     }
   }
 
-  private async ensureSession(userId: string, channel: 'app' | 'telegram'): Promise<string> {
+  private async ensureSession(
+    userId: string,
+    channel: 'app' | 'telegram',
+    preferredSessionId?: string,
+  ): Promise<string> {
+    const preferred = preferredSessionId
+      ? await this.resolveExistingSession(userId, preferredSessionId, channel)
+      : null;
+    if (preferred?.id) {
+      await this.pool.query(`UPDATE ai_chat_sessions SET updated_at = NOW() WHERE id = $1`, [preferred.id]);
+      return preferred.id;
+    }
+    const latest = await this.getLatestSession(userId, channel);
+    if (latest?.id) {
+      await this.pool.query(`UPDATE ai_chat_sessions SET updated_at = NOW() WHERE id = $1`, [latest.id]);
+      return latest.id;
+    }
+    const created = await this.createChatSession(userId, channel);
+    return created.id;
+  }
+
+  private async resolveExistingSession(
+    userId: string,
+    sessionId: string,
+    channel: 'app' | 'telegram',
+  ): Promise<{ id: string } | null> {
+    const { rows } = await this.pool.query<{ id: string }>(
+      `SELECT id FROM ai_chat_sessions
+       WHERE user_id = $1 AND channel = $2 AND id = $3
+       LIMIT 1`,
+      [userId, channel, sessionId],
+    );
+    return rows[0] ?? null;
+  }
+
+  private async getLatestSession(
+    userId: string,
+    channel: 'app' | 'telegram',
+  ): Promise<{ id: string } | null> {
     const { rows } = await this.pool.query<{ id: string }>(
       `SELECT id FROM ai_chat_sessions
        WHERE user_id = $1 AND channel = $2
@@ -465,15 +624,7 @@ export class AiInsightsService implements OnModuleInit {
        LIMIT 1`,
       [userId, channel],
     );
-    if (rows[0]?.id) {
-      await this.pool.query(`UPDATE ai_chat_sessions SET updated_at = NOW() WHERE id = $1`, [rows[0].id]);
-      return rows[0].id;
-    }
-    const created = await this.pool.query<{ id: string }>(
-      `INSERT INTO ai_chat_sessions (user_id, channel) VALUES ($1, $2) RETURNING id`,
-      [userId, channel],
-    );
-    return created.rows[0].id;
+    return rows[0] ?? null;
   }
 
   private async appendMessage(
@@ -486,6 +637,52 @@ export class AiInsightsService implements OnModuleInit {
       `INSERT INTO ai_chat_messages (session_id, role, message, refs)
        VALUES ($1, $2, $3, $4::jsonb)`,
       [sessionId, role, message, JSON.stringify(references)],
+    );
+  }
+
+  private async getRecentSessionMessages(
+    sessionId: string,
+    limit = 8,
+  ): Promise<Array<{ role: 'user' | 'assistant'; message: string }>> {
+    const safeLimit = Math.max(1, Math.min(20, Number(limit) || 8));
+    const { rows } = await this.pool.query<{ role: 'user' | 'assistant'; message: string }>(
+      `SELECT role, message
+       FROM ai_chat_messages
+       WHERE session_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [sessionId, safeLimit],
+    );
+    return rows.reverse();
+  }
+
+  private buildContextualQuestion(
+    question: string,
+    history: Array<{ role: 'user' | 'assistant'; message: string }>,
+  ): string {
+    const q = String(question ?? '').trim();
+    if (!q) return q;
+    if (!this.isLikelyFollowUp(q) || history.length === 0) return q;
+    const recent = history.slice(-4);
+    const contextBlock = recent
+      .map((m) => `${m.role === 'user' ? 'Пользователь' : 'Ассистент'}: ${m.message}`)
+      .join('\n');
+    return `Контекст предыдущего диалога:\n${contextBlock}\n\nУточняющий вопрос пользователя: ${q}`;
+  }
+
+  private isLikelyFollowUp(question: string): boolean {
+    const q = question.trim().toLowerCase();
+    if (!q) return false;
+    if (q.length <= 28) return true;
+    return (
+      /^(а|и|ну)\s/.test(q) ||
+      q.startsWith('а если') ||
+      q.startsWith('а почему') ||
+      q.startsWith('что если') ||
+      q.startsWith('что насчет') ||
+      q.includes('тогда') ||
+      q.includes('в этом случае') ||
+      q.includes('по этому')
     );
   }
 

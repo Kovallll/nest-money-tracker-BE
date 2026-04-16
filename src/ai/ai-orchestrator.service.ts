@@ -7,6 +7,7 @@ import {
   FinanceQuestionInput,
   FinanceQuestionOutput,
   ParseReceiptInput,
+  ParseStatementInput,
   ParsedTransactionDraft,
   RefineReceiptDraftInput,
 } from '@/ai/types';
@@ -20,6 +21,10 @@ export class AiOrchestratorService {
 
   parseReceipt(input: ParseReceiptInput): Promise<ParsedTransactionDraft> {
     return this.provider.parseReceipt(input);
+  }
+
+  parseStatementLines(input: ParseStatementInput): Promise<ParsedTransactionDraft[]> {
+    return this.provider.parseStatementLines(input);
   }
 
   applyEdit(input: EditDraftInput): Promise<ParsedTransactionDraft> {
