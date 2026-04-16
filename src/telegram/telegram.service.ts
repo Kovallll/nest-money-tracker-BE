@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  HttpException,
   Injectable,
   Inject,
   Logger,
@@ -12,9 +13,6 @@ import { PG_POOL } from '@/pg/pg.module';
 import { Telegraf } from 'telegraf';
 import { randomBytes } from 'crypto';
 import * as mammoth from 'mammoth';
-// pdf-parse поставляется как CommonJS
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const pdfParse = require('pdf-parse') as (buf: Buffer) => Promise<{ text: string }>;
 import { ReceiptOcrService } from '@/receipt-ocr/receipt-ocr.service';
 import { AiOrchestratorService } from '@/ai/ai-orchestrator.service';
 import { TransactionsService } from '@/models/transactions/transactions.service';
@@ -243,6 +241,46 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     return Buffer.from(arr);
   }
 
+  /**
+   * pdf-parse v1: `module.exports = async (buf) => ({ text })`.
+   * pdf-parse v2: named export `PDFParse` class, `getText()` / `destroy()`.
+   */
+  private async extractPdfTextWithPdfParse(buffer: Buffer): Promise<string> {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require('pdf-parse') as {
+      PDFParse?: new (opts: { data: Buffer }) => {
+        getText: () => Promise<{ text: string }>;
+        destroy: () => Promise<void>;
+      };
+      default?: unknown;
+    };
+
+    if (mod.PDFParse) {
+      const parser = new mod.PDFParse({ data: buffer });
+      try {
+        const result = await parser.getText();
+        return String(result.text || '').trim();
+      } finally {
+        await parser.destroy();
+      }
+    }
+
+    const legacyFn = mod as unknown as ((b: Buffer) => Promise<{ text: string }>) | undefined;
+    if (typeof legacyFn === 'function') {
+      const res = await legacyFn(buffer);
+      return String(res.text || '').trim();
+    }
+    const def = mod.default;
+    if (typeof def === 'function') {
+      const res = await (def as (b: Buffer) => Promise<{ text: string }>)(buffer);
+      return String(res.text || '').trim();
+    }
+
+    throw new BadRequestException(
+      'Не удалось инициализировать парсер PDF (ожидался pdf-parse v1 или v2). Проверьте зависимости backend.',
+    );
+  }
+
   private async extractTextFromDocumentBuffer(params: {
     buffer: Buffer;
     mime?: string;
@@ -252,8 +290,17 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     const mime = (params.mime || '').toLowerCase();
 
     if (mime.includes('pdf') || name.endsWith('.pdf')) {
-      const res = await pdfParse(params.buffer);
-      return { text: String(res.text || '').trim(), usedOcr: false };
+      try {
+        const text = await this.extractPdfTextWithPdfParse(params.buffer);
+        return { text, usedOcr: false };
+      } catch (e) {
+        if (e instanceof BadRequestException) throw e;
+        const detail = (e as Error)?.message ?? String(e);
+        this.logger.warn(`pdf-parse: ${detail}`);
+        throw new BadRequestException(
+          'Не удалось извлечь текст из PDF. Часто так бывает, если файл с паролем, битый экспорт или внутри только «картинка» страниц без текстового слоя (как скан). Попробуйте: снять пароль, сохранить выписку как PDF из браузера заново, прислать DOCX или фото/скан списка операций.',
+        );
+      }
     }
 
     if (
@@ -265,8 +312,16 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       if (name.endsWith('.doc') && !name.endsWith('.docx')) {
         throw new BadRequestException('Формат .doc не поддерживается. Сохраните выписку как .docx или PDF.');
       }
-      const result = await mammoth.extractRawText({ buffer: params.buffer });
-      return { text: String(result.value || '').trim(), usedOcr: false };
+      try {
+        const result = await mammoth.extractRawText({ buffer: params.buffer });
+        return { text: String(result.value || '').trim(), usedOcr: false };
+      } catch (e) {
+        const detail = (e as Error)?.message ?? String(e);
+        this.logger.warn(`mammoth docx: ${detail}`);
+        throw new BadRequestException(
+          'Не удалось прочитать DOCX. Файл может быть повреждён или иметь нестандартную структуру. Сохраните копию из банка или пришлите PDF.',
+        );
+      }
     }
 
     if (mime.startsWith('image/')) {
@@ -1316,10 +1371,20 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
   private async replyPipelineError(ctx: any, error: unknown): Promise<void> {
     const err = error as Error;
-    const text =
-      err instanceof ServiceUnavailableException || err instanceof BadRequestException
-        ? err.message
-        : 'Ошибка обработки. Попробуйте снова чуть позже.';
+    let text: string;
+    if (err instanceof ServiceUnavailableException || err instanceof BadRequestException) {
+      text = err.message;
+    } else if (error instanceof HttpException) {
+      const body = (error as HttpException).getResponse();
+      text =
+        typeof body === 'string'
+          ? body
+          : typeof body === 'object' && body && 'message' in body
+            ? String((body as { message: unknown }).message)
+            : (error as HttpException).message;
+    } else {
+      text = 'Ошибка обработки. Попробуйте снова чуть позже.';
+    }
 
     if (text.includes('Пользователь не привязан к Telegram')) {
       await ctx.reply(
