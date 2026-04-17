@@ -6,9 +6,17 @@ import { TransactionsModule } from '@/models/transactions/transactions.module';
 import { CategoriesModule } from '@/models/categories/categories.module';
 import { AiModule } from '@/ai/ai.module';
 import { AiInsightsModule } from '@/ai-insights/ai-insights.module';
+import { GroupRoomsModule } from '@/group-rooms/group-rooms.module';
 
 @Module({
-  imports: [ReceiptOcrModule, TransactionsModule, CategoriesModule, AiModule, AiInsightsModule],
+  imports: [
+    ReceiptOcrModule,
+    TransactionsModule,
+    CategoriesModule,
+    AiModule,
+    AiInsightsModule,
+    GroupRoomsModule,
+  ],
   providers: [TelegramService],
   controllers: [TelegramController],
   exports: [TelegramService],

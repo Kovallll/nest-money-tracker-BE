@@ -27,8 +27,17 @@ export type ParseReceiptInput = {
 export type ParseStatementInput = {
   context: AiUserContext;
   sourceText: string;
+  /** Смещение по чанкам (0-based) для поэтапного импорта длинной выписки. */
+  statementChunkOffset?: number;
+  /** Лимит чанков за один вызов (например, 6). */
+  statementChunkLimit?: number;
   /** Перед каждым запросом к модели по фрагменту текста (для прогресса в Telegram и т.п.). */
-  onStatementChunkProgress?: (p: { current: number; total: number }) => void | Promise<void>;
+  onStatementChunkProgress?: (p: {
+    current: number;
+    total: number;
+    globalCurrent?: number;
+    globalTotal?: number;
+  }) => void | Promise<void>;
 };
 
 export type ParsedTransactionDraft = {

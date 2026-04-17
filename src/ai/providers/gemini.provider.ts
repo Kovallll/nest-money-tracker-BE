@@ -315,18 +315,30 @@ export class GeminiProvider implements AiProvider {
     ].join('\n');
 
     const full = input.sourceText.slice(0, 100000);
-    const chunks = this.chunkStatementSource(
+    const allChunks = this.chunkStatementSource(
       full,
       this.statementChunkSize,
       this.statementChunkOverlap,
     );
-    this.logger.log(`parseStatementLines: ${chunks.length} chunk(s), ${full.length} chars`);
+    const chunkOffset = Math.max(0, Math.trunc(input.statementChunkOffset ?? 0));
+    const chunkLimitRaw = input.statementChunkLimit;
+    const chunkLimit =
+      chunkLimitRaw == null ? allChunks.length : Math.max(1, Math.trunc(chunkLimitRaw));
+    const chunks = allChunks.slice(chunkOffset, chunkOffset + chunkLimit);
+    this.logger.log(
+      `parseStatementLines: ${chunks.length}/${allChunks.length} chunk(s), ${full.length} chars, offset=${chunkOffset}`,
+    );
 
     const merged: Record<string, any>[] = [];
     const seen = new Set<string>();
 
     for (let i = 0; i < chunks.length; i++) {
-      await input.onStatementChunkProgress?.({ current: i + 1, total: chunks.length });
+      await input.onStatementChunkProgress?.({
+        current: i + 1,
+        total: chunks.length,
+        globalCurrent: chunkOffset + i + 1,
+        globalTotal: allChunks.length,
+      });
       const prompt = [
         preamble,
         `Сейчас передан только ФРАГМЕНТ выписки (${i + 1} из ${chunks.length}). Извлеки операции только из этого фрагмента; дубликаты между фрагментами допустимы — их уберём на сервере.`,

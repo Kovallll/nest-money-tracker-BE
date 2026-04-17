@@ -20,7 +20,8 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "docker:build": "docker-compose up -d --build",
-    "verify:pdf": "node scripts/verify-pdf-parse.cjs"
+    "verify:pdf": "node scripts/verify-pdf-parse.cjs",
+    "verify:statement": "node -r ts-node/register -r tsconfig-paths/register scripts/verify-statement-flow.ts"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.3",

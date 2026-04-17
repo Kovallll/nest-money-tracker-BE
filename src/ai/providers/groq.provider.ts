@@ -5,6 +5,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
+import { AxiosResponse } from 'axios';
 import { firstValueFrom } from 'rxjs';
 import {
   AiProvider,
@@ -34,13 +35,23 @@ type GroqCallOptions = {
   /** false — без json_object (Groq иначе даёт json_validate_failed на длинных массивах items). */
   responseJson?: boolean;
   maxTokens?: number;
+  retryOnRateLimit?: boolean;
 };
 
 @Injectable()
 export class GroqProvider implements AiProvider {
   private readonly logger = new Logger(GroqProvider.name);
-  private readonly statementChunkSize = 2200;
-  private readonly statementChunkOverlap = 500;
+  /** Groq on-demand TPM is strict; smaller chunks keep each request under limit. */
+  private readonly statementChunkSize = 1400;
+  private readonly statementChunkOverlap = 300;
+  private readonly statementMaxChunks = Math.max(
+    1,
+    Number.parseInt(process.env.GROQ_STATEMENT_MAX_CHUNKS || '6', 10) || 6,
+  );
+  private readonly statementChunkDelayMs = Math.max(
+    0,
+    Number.parseInt(process.env.GROQ_STATEMENT_CHUNK_DELAY_MS || '1400', 10) || 0,
+  );
 
   constructor(private readonly http: HttpService) {}
 
@@ -101,6 +112,11 @@ export class GroqProvider implements AiProvider {
     return `${d}|${a}|${t}`;
   }
 
+  private async sleep(ms: number): Promise<void> {
+    if (ms <= 0) return;
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   private extractJsonObjectFromModelText(modelText: string): Record<string, any> {
     let s = String(modelText || '').trim();
     const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -120,6 +136,7 @@ export class GroqProvider implements AiProvider {
   private async callGroq(prompt: string, options?: GroqCallOptions): Promise<Record<string, any>> {
     const endpoint = 'https://api.groq.com/openai/v1/chat/completions';
     const useJson = options?.responseJson !== false;
+    const retryOnRateLimit = options?.retryOnRateLimit !== false;
     const body: Record<string, unknown> = {
       model: this.model(),
       messages: [{ role: 'user', content: prompt }],
@@ -132,16 +149,31 @@ export class GroqProvider implements AiProvider {
       body.max_tokens = options.maxTokens;
     }
 
-    const res = await firstValueFrom(
-      this.http.post<GroqResponse>(endpoint, body, {
-        headers: {
-          Authorization: `Bearer ${this.apiKey()}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 120000,
-        validateStatus: () => true,
-      }),
-    );
+    let res: AxiosResponse<GroqResponse>;
+    let attempt = 0;
+    const maxAttempts = retryOnRateLimit ? 4 : 1;
+    while (true) {
+      attempt++;
+      res = await firstValueFrom(
+        this.http.post<GroqResponse>(endpoint, body, {
+          headers: {
+            Authorization: `Bearer ${this.apiKey()}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 120000,
+          validateStatus: () => true,
+        }),
+      );
+
+      if (res.status !== 429 || attempt >= maxAttempts) break;
+      const errMsg = String((res.data as any)?.error?.message || '');
+      const waitMatch = errMsg.match(/try again in\s+([0-9]+(?:\.[0-9]+)?)s/i);
+      const waitMs = waitMatch
+        ? Math.ceil(Number.parseFloat(waitMatch[1]) * 1000) + 600
+        : 9000 * attempt;
+      this.logger.warn(`Groq 429 rate-limit, retry ${attempt}/${maxAttempts} in ${waitMs}ms`);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
 
     if (res.status >= 400) {
       const bodyText = JSON.stringify(res.data ?? {});
@@ -300,14 +332,36 @@ export class GroqProvider implements AiProvider {
     ].join('\n');
 
     const full = input.sourceText.slice(0, 100000);
-    const chunks = this.chunkStatementSource(full, this.statementChunkSize, this.statementChunkOverlap);
-    this.logger.log(`parseStatementLines (Groq): ${chunks.length} chunk(s), ${full.length} chars`);
+    const allChunks = this.chunkStatementSource(full, this.statementChunkSize, this.statementChunkOverlap);
+    const chunkOffset = Math.max(0, Math.trunc(input.statementChunkOffset ?? 0));
+    const requestedLimitRaw = input.statementChunkLimit;
+    const requestedLimit =
+      requestedLimitRaw == null ? this.statementMaxChunks : Math.max(1, Math.trunc(requestedLimitRaw));
+    const effectiveLimit = Math.min(requestedLimit, this.statementMaxChunks);
+    const chunks = allChunks.slice(chunkOffset, chunkOffset + effectiveLimit);
+    const truncatedByChunkLimit = allChunks.length > chunkOffset + chunks.length;
+    this.logger.log(
+      `parseStatementLines (Groq): ${chunks.length}/${allChunks.length} chunk(s), ${full.length} chars, offset=${chunkOffset}`,
+    );
+    if (truncatedByChunkLimit) {
+      this.logger.warn(
+        `parseStatementLines (Groq): chunk limit ${this.statementMaxChunks} reached, tail skipped`,
+      );
+    }
 
     const merged: Record<string, any>[] = [];
     const seen = new Set<string>();
 
     for (let i = 0; i < chunks.length; i++) {
-      await input.onStatementChunkProgress?.({ current: i + 1, total: chunks.length });
+      await input.onStatementChunkProgress?.({
+        current: i + 1,
+        total: chunks.length,
+        globalCurrent: chunkOffset + i + 1,
+        globalTotal: allChunks.length,
+      });
+      if (i > 0 && this.statementChunkDelayMs > 0) {
+        await this.sleep(this.statementChunkDelayMs);
+      }
       const prompt = [
         preamble,
         `Сейчас передан только ФРАГМЕНТ выписки (${i + 1} из ${chunks.length}). Извлеки операции только из этого фрагмента; дубликаты между фрагментами допустимы — их уберём на сервере.`,
@@ -317,7 +371,8 @@ export class GroqProvider implements AiProvider {
 
       const parsed = await this.callGroq(prompt, {
         responseJson: false,
-        maxTokens: 16384,
+        // Keep headroom for prompt+completion to avoid "Request too large" on TPM-limited tiers.
+        maxTokens: 2400,
       });
       const items = Array.isArray(parsed?.items) ? parsed.items : [];
       for (const row of items) {
