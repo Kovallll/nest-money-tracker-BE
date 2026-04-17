@@ -64,6 +64,13 @@ export type EditDraftInput = {
   editText: string;
 };
 
+/** Произвольная правка всего списка черновика выписки по тексту пользователя (Telegram «править списком»). */
+export type ApplyBatchStatementEditInput = {
+  context: AiUserContext;
+  items: ParsedTransactionDraft[];
+  instruction: string;
+};
+
 export type RefineReceiptDraftInput = {
   context: AiUserContext;
   currentTx: ParsedTransactionDraft;
@@ -162,6 +169,8 @@ export interface AiProvider {
   parseReceipt(input: ParseReceiptInput): Promise<ParsedTransactionDraft>;
   /** Разбор выписки: только реальные операции со счёта, без заголовков и итогов. */
   parseStatementLines(input: ParseStatementInput): Promise<ParsedTransactionDraft[]>;
+  /** Правка массива черновиков по свободной формулировке (например «все WHOOSH — транспорт»). */
+  applyBatchStatementEdit(input: ApplyBatchStatementEditInput): Promise<ParsedTransactionDraft[]>;
   applyEdit(input: EditDraftInput): Promise<ParsedTransactionDraft>;
   refineReceiptDraft(input: RefineReceiptDraftInput): Promise<ParsedTransactionDraft>;
   generateDailyActivitySummary(

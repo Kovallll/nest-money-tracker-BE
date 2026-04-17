@@ -9,6 +9,7 @@ import { AxiosResponse } from 'axios';
 import { firstValueFrom } from 'rxjs';
 import {
   AiProvider,
+  ApplyBatchStatementEditInput,
   DailyActivitySummaryInput,
   DailyActivitySummaryOutput,
   EditDraftInput,
@@ -399,6 +400,71 @@ export class GroqProvider implements AiProvider {
     }
     if (out.length === 0) {
       throw new BadRequestException('Не удалось выделить операции из выписки');
+    }
+    return out.slice(0, 250);
+  }
+
+  async applyBatchStatementEdit(
+    input: ApplyBatchStatementEditInput,
+  ): Promise<ParsedTransactionDraft[]> {
+    if (!input.items?.length) {
+      throw new BadRequestException('Список операций для правки пуст');
+    }
+    const instruction = String(input.instruction || '').trim().slice(0, 4000);
+    if (!instruction) {
+      throw new BadRequestException('Пустая инструкция');
+    }
+    const itemsPayload = JSON.stringify(input.items).slice(0, 88000);
+    const prompt = [
+      'Ты правишь готовый список черновиков банковских операций по произвольной инструкции пользователя (любая формулировка).',
+      'Ответь ОДНИМ JSON-объектом без markdown и без текста до или после.',
+      'Формат:',
+      '{"items":[{"title":string,"description":string,"amount":number,"currencyCode":"BYN|USD|EUR|RUB","date":"YYYY-MM-DD","type":"expense|revenue|transfer","paymentMethod":"cash|card","cardId":number,"categoryId":string,"transferToCardId":number,"affectsCardBalance":boolean}]}',
+      'Правила:',
+      '- Интерпретируй инструкцию целиком: диапазоны строк («2–7», «со 2 по 7»), «все где в названии …», смена категории/типа/суммы, удаление дубликатов и т.п.',
+      '- Не добавляй новых операций, если пользователь явно этого не просил.',
+      '- Длину массива items меняй только если пользователь явно просит удалить строки или объединить дубликаты; иначе сохраняй то же число элементов и тот же порядок.',
+      '- В каждом элементе возвращай полный набор полей (как во входном списке), не только изменённые.',
+      '- cardId и categoryId только из переданных списков; если пользователь называет категорию словом, выбери id категории с подходящим title.',
+      'Инструкция пользователя:',
+      instruction,
+      'Текущий список (JSON):',
+      itemsPayload,
+      'Карты пользователя:',
+      JSON.stringify(input.context.cards),
+      'Категории пользователя:',
+      JSON.stringify(input.context.categories),
+    ].join('\n');
+
+    const parsed = await this.callGroq(prompt, {
+      responseJson: false,
+      maxTokens: 8192,
+    });
+    const rawItems = Array.isArray(parsed?.items) ? (parsed.items as Record<string, any>[]) : [];
+    if (rawItems.length === 0) {
+      throw new BadRequestException('Модель не вернула список операций после правки');
+    }
+    const originals = input.items;
+    const out: ParsedTransactionDraft[] = [];
+    for (let i = 0; i < rawItems.length; i++) {
+      const row = rawItems[i];
+      if (!row || typeof row !== 'object') continue;
+      const mergeFrom = originals[i];
+      try {
+        out.push(
+          this.normalizeParsed(row, {
+            context: input.context,
+            sourceTextForCurrency: instruction,
+            fallbackCardId: mergeFrom?.cardId,
+            mergeFrom,
+          }),
+        );
+      } catch (e) {
+        this.logger.warn(`applyBatchStatementEdit skip row ${i}: ${(e as Error).message}`);
+      }
+    }
+    if (out.length === 0) {
+      throw new BadRequestException('Не удалось применить правку к списку');
     }
     return out.slice(0, 250);
   }

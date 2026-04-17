@@ -15,6 +15,7 @@ import { randomBytes } from 'crypto';
 import * as mammoth from 'mammoth';
 import { ReceiptOcrService } from '@/receipt-ocr/receipt-ocr.service';
 import { AiOrchestratorService } from '@/ai/ai-orchestrator.service';
+import type { ParsedTransactionDraft } from '@/ai/types';
 import { TransactionsService } from '@/models/transactions/transactions.service';
 import { CategoriesService } from '@/models/categories/categories.service';
 import { AiInsightsService } from '@/ai-insights/ai-insights.service';
@@ -54,7 +55,7 @@ type TelegramBatchDraftRaw = {
   parsedChunkCount?: number;
   totalChunkCount?: number;
   hasMoreChunks?: boolean;
-  /** Включён режим правок текстом (номер строки в сообщении). */
+  /** Включён режим правок текстом (свободная формулировка или номер строки). */
   batchTextEditMode?: boolean;
   /** Сообщение со списком и кнопками — для правки текста без дублирования. */
   previewMessageId?: number;
@@ -458,6 +459,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       }
 
       const buffer = await this.downloadTelegramFile(best.file_id);
+      await ctx.reply('Прогресс: 30% — фото загружено, распознаю текст…');
       const ocr = await this.receiptOcrService.runOcrOnBuffer({
         buffer,
         originalname: `telegram_${best.file_id}.jpg`,
@@ -471,6 +473,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (asStatement) {
+        await ctx.reply('Прогресс: 55% — текст распознан, начинаю AI-разбор…');
         const scoped = await this.getStatementScopedUserContext(userCtx, intent?.statementTarget);
         await this.runStatementBatchPreviewWithProgress(
           ctx,
@@ -517,9 +520,19 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           fileName.toLowerCase().endsWith('.docx');
       }
 
-      await ctx.reply('Файл получен, извлекаю текст...');
+      const progressMsg = await ctx.reply('Прогресс: 10% — файл получен, скачиваю…');
 
       const buffer = await this.downloadTelegramFile(doc.file_id);
+      try {
+        await ctx.telegram.editMessageText(
+          chatId,
+          progressMsg.message_id,
+          undefined,
+          'Прогресс: 30% — файл скачан, извлекаю текст…',
+        );
+      } catch {
+        /* ignore */
+      }
       const { text: sourceText } = await this.extractTextFromDocumentBuffer({
         buffer,
         mime,
@@ -532,6 +545,16 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (asStatement) {
+        try {
+          await ctx.telegram.editMessageText(
+            chatId,
+            progressMsg.message_id,
+            undefined,
+            'Прогресс: 55% — текст извлечён, начинаю AI-разбор…',
+          );
+        } catch {
+          /* ignore */
+        }
         const scoped = await this.getStatementScopedUserContext(userCtx, intent?.statementTarget);
         await this.runStatementBatchPreviewWithProgress(
           ctx,
@@ -541,7 +564,16 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           intent?.statementTarget,
         );
       } else {
-        await ctx.reply('Формирую одну транзакцию по содержимому...');
+        try {
+          await ctx.telegram.editMessageText(
+            chatId,
+            progressMsg.message_id,
+            undefined,
+            'Прогресс: 70% — формирую транзакцию…',
+          );
+        } catch {
+          /* ignore */
+        }
         await this.buildPreviewAndSend(
           chatId,
           userCtx,
@@ -600,20 +632,48 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         isCommand && normalizedText !== '/готово' && normalizedText !== '/done';
       if (batchTextDraft?.raw.batchTextEditMode && !skipBatchTextCapture) {
         const instr = this.parseBatchUserInstruction(sourceText);
+        const scopedCtx = await this.getStatementScopedUserContext(
+          userCtx,
+          batchTextDraft.raw.importTarget,
+        );
+        const n = batchTextDraft.raw.items.length;
         if (instr.type === 'none') {
-          await ctx.reply(
-            [
-              'Не распознал команду. Нужен номер строки из списка (1, 2, 3…), затем правка или «удалить».',
-              'Примеры:',
-              '4 категория Транспорт',
-              '12 сумма 25.50',
-              '7 удалить',
-              'Закончить правки: /готово',
-            ].join('\n'),
+          const categoriesForPrompt = scopedCtx.categories.map((c) => ({ id: c.id, title: c.title }));
+          const cardsForPrompt = scopedCtx.cards.map((c) => ({
+            id: c.id,
+            name: c.name,
+            currencyCode: c.currencyCode,
+          }));
+          const fallbackCategoryId =
+            categoriesForPrompt[0]?.id ?? batchTextDraft.raw.items[0]?.categoryId ?? '';
+          const aiItems = await this.aiService.applyBatchStatementEdit({
+            instruction: sourceText,
+            items: batchTextDraft.raw.items as ParsedTransactionDraft[],
+            context: {
+              userId: scopedCtx.userId,
+              primaryCardId: scopedCtx.primaryCardId!,
+              cards: cardsForPrompt,
+              categories: categoriesForPrompt,
+              fallbackCategoryId,
+            },
+          });
+          const nextItems = aiItems.map((x) => ({ ...x, userId: userCtx.userId })) as PendingTx[];
+          await this.persistBatchItemsUpdate(
+            scopedCtx,
+            batchTextDraft.draftId,
+            batchTextDraft.raw,
+            nextItems,
           );
+          await this.refreshBatchPreviewOrSend(
+            chatId,
+            batchTextDraft.draftId,
+            batchTextDraft.raw,
+            scopedCtx,
+            nextItems,
+          );
+          await ctx.reply('Применил правки ко всему списку.');
           return;
         }
-        const n = batchTextDraft.raw.items.length;
         if (instr.type === 'delete') {
           const line0 = instr.line1 - 1;
           if (line0 < 0 || line0 >= n) {
@@ -629,10 +689,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             await ctx.reply('Все позиции удалены — черновик импорта отменён.');
             return;
           }
-          const scopedCtx = await this.getStatementScopedUserContext(
-            userCtx,
-            batchTextDraft.raw.importTarget,
-          );
           await this.persistBatchItemsUpdate(
             scopedCtx,
             batchTextDraft.draftId,
@@ -654,10 +710,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           await ctx.reply(`Нет строки ${instr.line1}. В списке позиций: 1–${n}.`);
           return;
         }
-        const scopedCtx = await this.getStatementScopedUserContext(
-          userCtx,
-          batchTextDraft.raw.importTarget,
-        );
         const categoriesForPrompt = scopedCtx.categories.map((c) => ({ id: c.id, title: c.title }));
         const fallbackCategoryId =
           categoriesForPrompt[0]?.id ?? batchTextDraft.raw.items[line0].categoryId ?? '';
@@ -708,9 +760,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       }
 
       const pendingBatchHint = await this.getLatestPendingBatchDraft(userCtx.userId);
-      if (pendingBatchHint && this.parseBatchUserInstruction(sourceText).type !== 'none') {
+      if (pendingBatchHint && !isCommand) {
         await ctx.reply(
-          'Сначала нажмите кнопку «✏️ Править списком» под черновиком выписки, затем отправьте то же сообщение с номером строки и правкой.',
+          'Сначала нажмите кнопку «✏️ Править списком» под черновиком выписки, затем отправьте сообщение с нужной правкой (в свободной форме или с номером строки).',
         );
         return;
       }
@@ -865,7 +917,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       'Кнопки «Чек» и «Выписка»: сначала нажмите кнопку, затем пришлите фото или файл (PDF, DOCX).',
       'Для «Выписка» бот сначала спросит контекст (личное/комната), затем начнёт AI-разбор.',
       'Без кнопки: фото чека — одна транзакция; PDF/DOCX — разбор выписки на несколько операций.',
-      'Импорт выписки: «Править списком» → сообщения с номером строки (пример: 3 категория Транспорт). /готово — выйти из правок.',
+      'Импорт выписки: «Править списком» → отправляйте любые правки текстом (например «все WHOOSH в Транспорт») или по номеру строки. /готово — выйти из правок.',
       '',
       'По умолчанию обычный текст без команды считается вопросом ассистенту.',
     ].join('\n');
@@ -1013,9 +1065,10 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           await ctx.answerCbQuery('Режим правок');
           await ctx.reply(
             [
-              'Режим правок включён. В каждом сообщении — одна команда, в начале номер строки из списка (1, 2, 3…).',
+              'Режим правок включён. В каждом сообщении можно написать правку в свободной форме или командой с номером строки.',
               'Примеры:',
               '4 категория Транспорт',
+              'все строки с WHOOSH.BIKE категория Транспорт',
               '12 сумма 25.50',
               '7 удалить',
               'Закончить правки: /готово (или сразу «Создать все»).',
@@ -1037,6 +1090,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           const nextOffset = (batch.raw.parsedChunkOffset ?? 0) + (batch.raw.parsedChunkCount ?? 0);
           const scopedCtx = await this.getStatementScopedUserContext(userCtx, batch.raw.importTarget);
           await ctx.answerCbQuery('Загружаю следующую часть…');
+          const progressMsg = await ctx.reply('Прогресс: 55% — продолжаю AI-разбор…');
           await this.buildStatementBatchPreview(
             chatId,
             scopedCtx,
@@ -1046,6 +1100,22 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
               draftIdToMerge: draftId,
               statementChunkOffset: nextOffset,
               statementChunkLimit: this.statementChunkPageSize,
+              onStatementChunkProgress: async ({ current, total }) => {
+                const pct = Math.max(
+                  55,
+                  Math.min(95, 55 + Math.round((current / Math.max(1, total)) * 40)),
+                );
+                try {
+                  await ctx.telegram.editMessageText(
+                    chatId,
+                    progressMsg.message_id,
+                    undefined,
+                    `Прогресс: ${pct}% — продолжаю AI-разбор…`,
+                  );
+                } catch {
+                  /* ignore */
+                }
+              },
             },
           );
           await ctx.reply('Добавил следующую часть выписки в этот же список.');
@@ -1601,7 +1671,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     return [
       '',
       '────────',
-      'Правки: нажмите «✏️ Править списком», затем сообщениями (обязательно с номером строки):',
+      'Правки: нажмите «✏️ Править списком», затем сообщениями (свободный текст или команда с номером строки):',
+      '  пример: все WHOOSH.BIKE → категория Транспорт',
       '  пример: 4 категория Транспорт',
       '  пример: 12 сумма 25.50',
       '  удалить строку: 7 удалить',
@@ -1707,10 +1778,11 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     };
     const contextLabel =
       importTarget?.scope === 'room' ? `👥 ${importTarget.roomName || 'Комната'}` : '🏠 Личное';
-    await show(`Разбираю выписку на операции (AI)...\nКонтекст: ${contextLabel}`);
+    await show(`Прогресс: 55% — разбираю выписку на операции (AI)...\nКонтекст: ${contextLabel}`);
     await this.buildStatementBatchPreview(chatId, userCtx, sourceText, {
       onStatementChunkProgress: async ({ current, total }) => {
-        await show(`Разбираю выписку: фрагмент ${current} из ${total}…`);
+        const pct = Math.max(55, Math.min(95, 55 + Math.round((current / Math.max(1, total)) * 40)));
+        await show(`Прогресс: ${pct}% — разбираю выписку (шаг ${current}/${total})…`);
       },
       importTarget,
       statementChunkOffset: 0,
@@ -1722,7 +1794,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           chatId,
           progressMsgId,
           undefined,
-          'Формирую список операций…',
+          'Прогресс: 98% — формирую список операций…',
         );
       } catch {
         /* то же текст / rate limit — не критично */

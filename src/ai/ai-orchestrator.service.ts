@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
   AiProvider,
+  ApplyBatchStatementEditInput,
   DailyActivitySummaryInput,
   DailyActivitySummaryOutput,
   EditDraftInput,
@@ -25,6 +26,12 @@ export class AiOrchestratorService {
 
   parseStatementLines(input: ParseStatementInput): Promise<ParsedTransactionDraft[]> {
     return this.provider.parseStatementLines(input);
+  }
+
+  applyBatchStatementEdit(
+    input: ApplyBatchStatementEditInput,
+  ): Promise<ParsedTransactionDraft[]> {
+    return this.provider.applyBatchStatementEdit(input);
   }
 
   applyEdit(input: EditDraftInput): Promise<ParsedTransactionDraft> {
