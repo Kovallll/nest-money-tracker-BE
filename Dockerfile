@@ -18,6 +18,7 @@ COPY . .
 
 # Build application
 RUN yarn build
+RUN test -f dist/src/main.js
 
 # Expose default port
 EXPOSE 5000
@@ -27,4 +28,4 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
   CMD node -e "require('http').get('http://localhost:5000/api/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
 
 # Start application
-CMD ["yarn", "start:prod"]
+CMD ["node", "dist/src/main.js"]
