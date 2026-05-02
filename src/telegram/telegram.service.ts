@@ -55,8 +55,15 @@ type TelegramBatchDraftRaw = {
   parsedChunkCount?: number;
   totalChunkCount?: number;
   hasMoreChunks?: boolean;
-  /** Включён режим правок текстом (свободная формулировка или номер строки). */
+  /** Включён режим правок текстом (свободная формулировка). */
   batchTextEditMode?: boolean;
+  /** Кандидат массовой AI-правки, который ждёт явного подтверждения пользователя. */
+  pendingAiEdit?: {
+    instruction: string;
+    items: PendingTx[];
+    reason: string;
+    createdAt: string;
+  };
   /** Сообщение со списком и кнопками — для правки текста без дублирования. */
   previewMessageId?: number;
 };
@@ -631,97 +638,21 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       const skipBatchTextCapture =
         isCommand && normalizedText !== '/готово' && normalizedText !== '/done';
       if (batchTextDraft?.raw.batchTextEditMode && !skipBatchTextCapture) {
-        const instr = this.parseBatchUserInstruction(sourceText);
         const scopedCtx = await this.getStatementScopedUserContext(
           userCtx,
           batchTextDraft.raw.importTarget,
         );
-        const n = batchTextDraft.raw.items.length;
-        if (instr.type === 'none') {
-          const categoriesForPrompt = scopedCtx.categories.map((c) => ({ id: c.id, title: c.title }));
-          const cardsForPrompt = scopedCtx.cards.map((c) => ({
-            id: c.id,
-            name: c.name,
-            currencyCode: c.currencyCode,
-          }));
-          const fallbackCategoryId =
-            categoriesForPrompt[0]?.id ?? batchTextDraft.raw.items[0]?.categoryId ?? '';
-          const aiItems = await this.aiService.applyBatchStatementEdit({
-            instruction: sourceText,
-            items: batchTextDraft.raw.items as ParsedTransactionDraft[],
-            context: {
-              userId: scopedCtx.userId,
-              primaryCardId: scopedCtx.primaryCardId!,
-              cards: cardsForPrompt,
-              categories: categoriesForPrompt,
-              fallbackCategoryId,
-            },
-          });
-          const nextItems = aiItems.map((x) => ({ ...x, userId: userCtx.userId })) as PendingTx[];
-          await this.persistBatchItemsUpdate(
-            scopedCtx,
-            batchTextDraft.draftId,
-            batchTextDraft.raw,
-            nextItems,
-          );
-          await this.refreshBatchPreviewOrSend(
-            chatId,
-            batchTextDraft.draftId,
-            batchTextDraft.raw,
-            scopedCtx,
-            nextItems,
-          );
-          await ctx.reply('Применил правки ко всему списку.');
-          return;
-        }
-        if (instr.type === 'delete') {
-          const line0 = instr.line1 - 1;
-          if (line0 < 0 || line0 >= n) {
-            await ctx.reply(`Нет строки ${instr.line1}. В списке позиций: 1–${n}.`);
-            return;
-          }
-          const nextItems = batchTextDraft.raw.items.filter((_, i) => i !== line0);
-          if (nextItems.length === 0) {
-            await this.pool.query(
-              `UPDATE transaction_drafts SET status = 'rejected' WHERE id = $1 AND user_id = $2`,
-              [batchTextDraft.draftId, userCtx.userId],
-            );
-            await ctx.reply('Все позиции удалены — черновик импорта отменён.');
-            return;
-          }
-          await this.persistBatchItemsUpdate(
-            scopedCtx,
-            batchTextDraft.draftId,
-            batchTextDraft.raw,
-            nextItems,
-          );
-          await this.refreshBatchPreviewOrSend(
-            chatId,
-            batchTextDraft.draftId,
-            batchTextDraft.raw,
-            scopedCtx,
-            nextItems,
-          );
-          await ctx.reply(`Строка ${instr.line1} удалена. Осталось позиций: ${nextItems.length}.`);
-          return;
-        }
-        const line0 = instr.line1 - 1;
-        if (line0 < 0 || line0 >= n) {
-          await ctx.reply(`Нет строки ${instr.line1}. В списке позиций: 1–${n}.`);
-          return;
-        }
         const categoriesForPrompt = scopedCtx.categories.map((c) => ({ id: c.id, title: c.title }));
         const fallbackCategoryId =
-          categoriesForPrompt[0]?.id ?? batchTextDraft.raw.items[line0].categoryId ?? '';
+          categoriesForPrompt[0]?.id ?? batchTextDraft.raw.items[0]?.categoryId ?? '';
         const cardsForPrompt = scopedCtx.cards.map((c) => ({
           id: c.id,
           name: c.name,
           currencyCode: c.currencyCode,
         }));
-        const currentTx = batchTextDraft.raw.items[line0];
-        let updated = await this.aiService.applyEdit({
-          editText: instr.instruction,
-          currentTx,
+        const aiItems = await this.aiService.applyBatchStatementEdit({
+          instruction: sourceText,
+          items: batchTextDraft.raw.items as ParsedTransactionDraft[],
           context: {
             userId: scopedCtx.userId,
             primaryCardId: scopedCtx.primaryCardId!,
@@ -730,18 +661,35 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             fallbackCategoryId,
           },
         });
-        updated = { ...updated, userId: userCtx.userId };
-        if (updated.type !== 'transfer') {
-          const forcedCat = this.resolveCategoryIdFromInstruction(
-            instr.instruction,
-            scopedCtx.categories.map((c) => ({ id: c.id, title: c.title })),
+        const nextItems = aiItems.map((x) => ({ ...x, userId: userCtx.userId })) as PendingTx[];
+        const review = this.analyzeAiBatchEditRisk(batchTextDraft.raw.items, nextItems, sourceText);
+        if (review.needsConfirmation) {
+          const nextRaw: TelegramBatchDraftRaw = {
+            ...batchTextDraft.raw,
+            pendingAiEdit: {
+              instruction: sourceText.slice(0, 4000),
+              items: nextItems,
+              reason: review.reason,
+              createdAt: new Date().toISOString(),
+            },
+          };
+          await this.pool.query(
+            `UPDATE transaction_drafts SET raw_data = $3::jsonb WHERE id = $1 AND user_id = $2`,
+            [batchTextDraft.draftId, userCtx.userId, JSON.stringify(nextRaw)],
           );
-          if (forcedCat) {
-            updated = { ...updated, categoryId: forcedCat };
-          }
+          await ctx.reply(
+            [
+              'AI предложил потенциально рискованное массовое изменение. Применить его?',
+              `Причина: ${review.reason}`,
+            ].join('\n'),
+            {
+              reply_markup: {
+                inline_keyboard: this.buildBatchAiReviewKeyboard(batchTextDraft.draftId),
+              },
+            },
+          );
+          return;
         }
-        const nextItems = [...batchTextDraft.raw.items];
-        nextItems[line0] = updated as PendingTx;
         await this.persistBatchItemsUpdate(
           scopedCtx,
           batchTextDraft.draftId,
@@ -755,14 +703,14 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           scopedCtx,
           nextItems,
         );
-        await ctx.reply(`Позиция ${instr.line1} обновлена.`);
+        await ctx.reply('Применил правки ко всему списку.');
         return;
       }
 
       const pendingBatchHint = await this.getLatestPendingBatchDraft(userCtx.userId);
       if (pendingBatchHint && !isCommand) {
         await ctx.reply(
-          'Сначала нажмите кнопку «✏️ Править списком» под черновиком выписки, затем отправьте сообщение с нужной правкой (в свободной форме или с номером строки).',
+          'Сначала нажмите кнопку «✏️ Править списком» под черновиком выписки, затем отправьте сообщение с нужной правкой в свободной форме.',
         );
         return;
       }
@@ -917,7 +865,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       'Кнопки «Чек» и «Выписка»: сначала нажмите кнопку, затем пришлите фото или файл (PDF, DOCX).',
       'Для «Выписка» бот сначала спросит контекст (личное/комната), затем начнёт AI-разбор.',
       'Без кнопки: фото чека — одна транзакция; PDF/DOCX — разбор выписки на несколько операций.',
-      'Импорт выписки: «Править списком» → отправляйте любые правки текстом (например «все WHOOSH в Транспорт») или по номеру строки. /готово — выйти из правок.',
+      'Импорт выписки: «Править списком» → отправляйте любые правки текстом (например «все WHOOSH в Транспорт»). /готово — выйти из правок.',
       '',
       'По умолчанию обычный текст без команды считается вопросом ассистенту.',
     ].join('\n');
@@ -1026,7 +974,14 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      if (action === 'bcf' || action === 'bca' || action === 'bte' || action === 'bmore') {
+      if (
+        action === 'bcf' ||
+        action === 'bca' ||
+        action === 'bte' ||
+        action === 'bmore' ||
+        action === 'btaok' ||
+        action === 'btacancel'
+      ) {
         const draftId = rest;
 
         const batch = await this.getPendingBatchDraft(userCtx.userId, draftId);
@@ -1065,15 +1020,58 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           await ctx.answerCbQuery('Режим правок');
           await ctx.reply(
             [
-              'Режим правок включён. В каждом сообщении можно написать правку в свободной форме или командой с номером строки.',
+              'Режим правок включён. В каждом сообщении можно написать правку в свободной форме.',
               'Примеры:',
-              '4 категория Транспорт',
               'все строки с WHOOSH.BIKE категория Транспорт',
-              '12 сумма 25.50',
-              '7 удалить',
+              'удали дубли за 3 апреля',
+              'строки с ERIP в категорию Коммунальные',
               'Закончить правки: /готово (или сразу «Создать все»).',
             ].join('\n'),
           );
+          return;
+        }
+
+        if (action === 'btacancel') {
+          const nextRaw: TelegramBatchDraftRaw = {
+            ...batch.raw,
+            pendingAiEdit: undefined,
+          };
+          await this.pool.query(
+            `UPDATE transaction_drafts SET raw_data = $3::jsonb WHERE id = $1 AND user_id = $2`,
+            [draftId, userCtx.userId, JSON.stringify(nextRaw)],
+          );
+          await ctx.answerCbQuery('Отменено');
+          await ctx.reply('Не применял предложенную AI массовую правку.');
+          return;
+        }
+
+        if (action === 'btaok') {
+          const pending = batch.raw.pendingAiEdit;
+          if (!pending?.items?.length) {
+            await ctx.answerCbQuery('Нечего применять');
+            await ctx.reply('Черновик AI-правки не найден или устарел. Отправьте инструкцию ещё раз.');
+            return;
+          }
+          const scopedCtx = await this.getStatementScopedUserContext(userCtx, batch.raw.importTarget);
+          const nextRaw: TelegramBatchDraftRaw = {
+            ...batch.raw,
+            pendingAiEdit: undefined,
+          };
+          await this.persistBatchItemsUpdate(
+            scopedCtx,
+            draftId,
+            nextRaw,
+            pending.items,
+          );
+          await this.refreshBatchPreviewOrSend(
+            chatId,
+            draftId,
+            nextRaw,
+            scopedCtx,
+            pending.items,
+          );
+          await ctx.answerCbQuery('Применено');
+          await ctx.reply('Применил подтверждённую AI-правку списка.');
           return;
         }
 
@@ -1453,68 +1451,54 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     return Math.round(s * 100) / 100;
   }
 
-  /** Распознавание «номер + правка» или «номер удалить» (номер — строка в списке 1-based). */
-  private parseBatchUserInstruction(
-    raw: string,
-  ):
-    | { type: 'none' }
-    | { type: 'delete'; line1: number }
-    | { type: 'edit'; line1: number; instruction: string } {
-    const s = String(raw || '').trim();
-    const delA = s.match(/^\s*(\d{1,4})\s+удалить\s*$/i);
-    const delB = s.match(/^\s*удалить\s+(\d{1,4})\s*$/i);
-    if (delA) return { type: 'delete', line1: Number.parseInt(delA[1], 10) };
-    if (delB) return { type: 'delete', line1: Number.parseInt(delB[1], 10) };
-
-    const ed1 = s.match(/^\s*(\d{1,4})\s*[.):\-–]\s*(.+)$/s);
-    if (ed1) {
-      const instruction = ed1[2].trim();
-      if (instruction.length >= 2) {
-        return { type: 'edit', line1: Number.parseInt(ed1[1], 10), instruction };
-      }
-    }
-    const ed2 = s.match(/^\s*(\d{1,4})\s+(\S.{1,500})$/s);
-    if (ed2) {
-      const instruction = ed2[2].trim();
-      if (instruction.length >= 2) {
-        return { type: 'edit', line1: Number.parseInt(ed2[1], 10), instruction };
-      }
-    }
-    return { type: 'none' };
+  private instructionLikelyAllowsCountChange(instruction: string): boolean {
+    const s = String(instruction || '').toLowerCase();
+    return /(удали|удалить|убери|убрать|delete|remove|дубликат|дубли|оставь только|только\s+\d+)/i.test(
+      s,
+    );
   }
 
-  /**
-   Если в тексте правки явно фигурирует название категории из списка пользователя — фиксируем id,
-   чтобы модель не подставляла «похожую» категорию (например вместо «Транспорт»).
-   */
-  private resolveCategoryIdFromInstruction(
+  private txFingerprint(tx: PendingTx): string {
+    const a = Number(tx.amount) || 0;
+    const t = String(tx.title || '').trim().toLowerCase().slice(0, 64);
+    const d = String(tx.date || '').trim();
+    return `${d}|${a}|${t}`;
+  }
+
+  private analyzeAiBatchEditRisk(
+    beforeItems: PendingTx[],
+    afterItems: PendingTx[],
     instruction: string,
-    categories: Array<{ id: string; title: string }>,
-  ): string | null {
-    const low = instruction.toLowerCase().normalize('NFC');
-    let best: { id: string; score: number } | null = null;
-    for (const c of categories) {
-      const t = c.title.trim().toLowerCase();
-      if (t.length < 2) continue;
-      if (low.includes(t)) {
-        const score = t.length;
-        if (!best || score > best.score) best = { id: c.id, score };
+  ): { needsConfirmation: boolean; reason: string } {
+    const beforeN = beforeItems.length;
+    const afterN = afterItems.length;
+    const countChangeAllowed = this.instructionLikelyAllowsCountChange(instruction);
+    if (!countChangeAllowed && beforeN > 0) {
+      if (afterN <= Math.floor(beforeN * 0.7)) {
+        return {
+          needsConfirmation: true,
+          reason: `количество строк сильно уменьшилось (${beforeN} -> ${afterN})`,
+        };
+      }
+      if (afterN >= Math.ceil(beforeN * 1.3)) {
+        return {
+          needsConfirmation: true,
+          reason: `количество строк сильно выросло (${beforeN} -> ${afterN})`,
+        };
       }
     }
-    const m = low.match(/категори[яию]\s*[:\-]?\s*(.+)$/i);
-    if (m) {
-      const phrase = m[1].trim().replace(/\s+/g, ' ').split(/[,.;]/)[0].trim();
-      if (phrase.length >= 2) {
-        for (const c of categories) {
-          const t = c.title.trim().toLowerCase();
-          if (t.includes(phrase) || phrase.includes(t)) {
-            const score = Math.max(t.length, phrase.length);
-            if (!best || score > best.score) best = { id: c.id, score };
-          }
-        }
-      }
+    const beforeSet = new Set(beforeItems.map((x) => this.txFingerprint(x)));
+    let unfamiliar = 0;
+    for (const tx of afterItems) {
+      if (!beforeSet.has(this.txFingerprint(tx))) unfamiliar++;
     }
-    return best?.id ?? null;
+    if (afterN >= 10 && unfamiliar / afterN >= 0.9) {
+      return {
+        needsConfirmation: true,
+        reason: 'почти все строки выглядят полностью заменёнными',
+      };
+    }
+    return { needsConfirmation: false, reason: '' };
   }
 
   private async getPendingBatchTextEditDraft(
@@ -1587,6 +1571,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       hasMoreChunks: prevRaw.hasMoreChunks,
       previewMessageId: prevRaw.previewMessageId,
       batchTextEditMode: prevRaw.batchTextEditMode === true,
+      pendingAiEdit: undefined,
     };
     await this.pool.query(
       `UPDATE transaction_drafts SET raw_data = $3::jsonb, amount = $4, title = $5 WHERE id = $1 AND user_id = $2`,
@@ -1671,11 +1656,10 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     return [
       '',
       '────────',
-      'Правки: нажмите «✏️ Править списком», затем сообщениями (свободный текст или команда с номером строки):',
+      'Правки: нажмите «✏️ Править списком», затем сообщениями в свободной форме:',
       '  пример: все WHOOSH.BIKE → категория Транспорт',
-      '  пример: 4 категория Транспорт',
-      '  пример: 12 сумма 25.50',
-      '  удалить строку: 7 удалить',
+      '  пример: удали дубли за 3 апреля',
+      '  пример: строки с ERIP в категорию Коммунальные',
       'Закончить правки: /готово',
     ].join('\n');
   }
@@ -1695,6 +1679,17 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       rows.push([{ text: '➡️ Продолжить', callback_data: `bmore:${draftId}` }]);
     }
     return rows;
+  }
+
+  private buildBatchAiReviewKeyboard(
+    draftId: string,
+  ): Array<Array<{ text: string; callback_data: string }>> {
+    return [
+      [
+        { text: '✅ Применить AI-правку', callback_data: `btaok:${draftId}` },
+        { text: '❌ Не применять', callback_data: `btacancel:${draftId}` },
+      ],
+    ];
   }
 
   private async sendBatchPreviewMessage(

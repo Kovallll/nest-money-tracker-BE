@@ -148,8 +148,7 @@ export class TransactionsService implements OnModuleInit {
       id: row.id,
       userId: row.user_id,
       cardId: String(row.card_id),
-      transferToCardId:
-        row.transfer_to_card_id != null ? String(row.transfer_to_card_id) : null,
+      transferToCardId: row.transfer_to_card_id != null ? String(row.transfer_to_card_id) : null,
       categoryId: row.category_id ?? '',
       category: row.category_name ?? row.category ?? null,
       type: row.type,
@@ -199,6 +198,68 @@ export class TransactionsService implements OnModuleInit {
       [cardId],
     );
     return rows[0]?.currency_code ?? 'BYN';
+  }
+
+  private async getCardSnapshot(
+    cardId: number,
+  ): Promise<{ cardBalance: number; currencyCode: string } | null> {
+    const { rows } = await this.pool.query<{
+      card_balance: string | number;
+      currency_code: string;
+    }>('SELECT card_balance, currency_code FROM cards WHERE id = $1 LIMIT 1', [cardId]);
+    if (!rows[0]) return null;
+    return {
+      cardBalance: Number(rows[0].card_balance) || 0,
+      currencyCode: rows[0].currency_code ?? 'BYN',
+    };
+  }
+
+  /**
+   * Добавляет текст транзакции в examples выбранной категории (если еще нет).
+   * Это помогает ML учиться на реальном выборе пользователя.
+   */
+  private async addCategoryExampleFromTransaction(
+    categoryId: string | null | undefined,
+    title: string | null | undefined,
+  ): Promise<void> {
+    const cid = String(categoryId ?? '').trim();
+    const text = String(title ?? '').trim();
+    if (!cid || !text || text.length < 2) return;
+    await this.pool.query(
+      `INSERT INTO examples (category_id, text, user_id)
+       SELECT $1::uuid, $2, c.user_id
+       FROM categories c
+       WHERE c.id = $1::uuid
+       ON CONFLICT (category_id, text) DO NOTHING`,
+      [cid, text],
+    );
+  }
+
+  /**
+   * Проверка, что списание не уводит карту в отрицательный баланс.
+   * debitAmountInTransactionCurrency должен быть > 0.
+   */
+  async assertCardHasSufficientFunds(
+    cardId: number,
+    debitAmountInTransactionCurrency: number,
+    transactionCurrency: string,
+  ): Promise<void> {
+    if (!(debitAmountInTransactionCurrency > 0)) return;
+    const snapshot = await this.getCardSnapshot(cardId);
+    if (!snapshot) {
+      throw new BadRequestException('Карта не найдена');
+    }
+    const debitInCardCurrency = this.exchangeRates.convert(
+      debitAmountInTransactionCurrency,
+      transactionCurrency,
+      snapshot.currencyCode,
+    );
+    const nextBalance = snapshot.cardBalance - debitInCardCurrency;
+    if (nextBalance < 0) {
+      throw new BadRequestException(
+        `Недостаточно средств на карте: после операции баланс был бы отрицательным (${nextBalance.toFixed(2)} ${snapshot.currencyCode})`,
+      );
+    }
   }
 
   /**
@@ -281,7 +342,9 @@ export class TransactionsService implements OnModuleInit {
   ): Promise<void> {
     await this.assertPersonalCardBelongsToUser(cardId, payerUserId);
     if (type === 'transfer') {
-      this.logger.warn('reversePersonalCardForGroupTx: transfer с одной картой — используйте пару карт');
+      this.logger.warn(
+        'reversePersonalCardForGroupTx: transfer с одной картой — используйте пару карт',
+      );
       return;
     }
     const reverseType = type === 'expense' ? 'revenue' : 'expense';
@@ -336,7 +399,11 @@ export class TransactionsService implements OnModuleInit {
     const hasAffectsCol = await this.ensureTxAffectsCardBalanceColumn();
     const affects = dto.affectsCardBalance !== false;
     const categoryIdForRow =
-      dto.type === 'transfer' ? (dto.categoryId?.trim() ? dto.categoryId.trim() : null) : dto.categoryId || null;
+      dto.type === 'transfer'
+        ? dto.categoryId?.trim()
+          ? dto.categoryId.trim()
+          : null
+        : dto.categoryId || null;
     const transferToId =
       dto.type === 'transfer' && dto.transferToCardId ? Number(dto.transferToCardId) : null;
 
@@ -403,6 +470,14 @@ export class TransactionsService implements OnModuleInit {
 
     const cardId = dto.cardId ? Number(dto.cardId) : null;
     const applyBalances = hasAffectsCol ? affects : true;
+    if (applyBalances) {
+      if (dto.type === 'expense' && cardId != null && !Number.isNaN(cardId)) {
+        await this.assertCardHasSufficientFunds(cardId, dto.amount, currencyCode);
+      }
+      if (dto.type === 'transfer' && cardId != null && !Number.isNaN(cardId)) {
+        await this.assertCardHasSufficientFunds(cardId, dto.amount, currencyCode);
+      }
+    }
     if (
       dto.type === 'transfer' &&
       cardId != null &&
@@ -425,6 +500,7 @@ export class TransactionsService implements OnModuleInit {
       await this.pool.query('UPDATE categories SET updated_at = NOW() WHERE id = $1', [
         dto.categoryId.trim(),
       ]);
+      await this.addCategoryExampleFromTransaction(dto.categoryId, dto.title);
     }
     if (dto.predictionKey && dto.predictedCategoryId != null) {
       await this.predictionFeedback
@@ -441,10 +517,7 @@ export class TransactionsService implements OnModuleInit {
     return this.mapRow(rows[0]);
   }
 
-  async updateTransaction(
-    id: number,
-    dto: UpdateTransactionDto,
-  ): Promise<Transaction | null> {
+  async updateTransaction(id: number, dto: UpdateTransactionDto): Promise<Transaction | null> {
     const existing = await this.getTransactionById(id);
     if (!existing) return null;
 
@@ -505,7 +578,7 @@ export class TransactionsService implements OnModuleInit {
          RETURNING *`,
             [
               dto.userId ?? null,
-              dto.cardId !== undefined ? (dto.cardId || null) : null,
+              dto.cardId !== undefined ? dto.cardId || null : null,
               dto.categoryId !== undefined ? dto.categoryId || null : null,
               dto.type ?? null,
               dto.amount ?? null,
@@ -538,7 +611,7 @@ export class TransactionsService implements OnModuleInit {
          RETURNING *`,
               [
                 dto.userId ?? null,
-                dto.cardId !== undefined ? (dto.cardId || null) : null,
+                dto.cardId !== undefined ? dto.cardId || null : null,
                 dto.categoryId !== undefined ? dto.categoryId || null : null,
                 dto.type ?? null,
                 dto.amount ?? null,
@@ -568,7 +641,7 @@ export class TransactionsService implements OnModuleInit {
          RETURNING *`,
               [
                 dto.userId ?? null,
-                dto.cardId !== undefined ? (dto.cardId || null) : null,
+                dto.cardId !== undefined ? dto.cardId || null : null,
                 dto.categoryId !== undefined ? dto.categoryId || null : null,
                 dto.type ?? null,
                 dto.amount ?? null,
@@ -617,11 +690,12 @@ export class TransactionsService implements OnModuleInit {
     }
 
     const newCategoryId = dto.categoryId ?? existing.categoryId;
+    const newTitle = dto.title ?? existing.title ?? null;
     if (newCategoryId) {
-      await this.pool.query(
-        'UPDATE categories SET updated_at = NOW() WHERE id = $1',
-        [newCategoryId],
-      );
+      await this.pool.query('UPDATE categories SET updated_at = NOW() WHERE id = $1', [
+        newCategoryId,
+      ]);
+      await this.addCategoryExampleFromTransaction(newCategoryId, newTitle);
     }
     if (dto.predictionKey && dto.predictedCategoryId != null) {
       await this.predictionFeedback

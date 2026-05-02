@@ -334,6 +334,26 @@ export class GroupRoomsService implements OnModuleInit {
     );
   }
 
+  /**
+   * Сохраняет текст транзакции как пример для выбранной категории (без дублей).
+   */
+  private async addCategoryExampleFromTransaction(
+    categoryId: string | null | undefined,
+    title: string | null | undefined,
+  ): Promise<void> {
+    const cid = String(categoryId ?? '').trim();
+    const text = String(title ?? '').trim();
+    if (!cid || !text || text.length < 2) return;
+    await this.pool.query(
+      `INSERT INTO examples (category_id, text, user_id)
+       SELECT $1::uuid, $2, c.user_id
+       FROM categories c
+       WHERE c.id = $1::uuid
+       ON CONFLICT (category_id, text) DO NOTHING`,
+      [cid, text],
+    );
+  }
+
   async createRoom(userId: string, dto: CreateGroupRoomDto) {
     const client = await this.pool.connect();
     try {
@@ -517,7 +537,14 @@ export class GroupRoomsService implements OnModuleInit {
        RETURNING id, room_id AS "roomId", created_by AS "createdBy", token, expires_at AS "expiresAt", created_at AS "createdAt"`,
       [roomId, userId, token, expiresInHours],
     );
-    await this.appendActivity(this.pool, roomId, userId, 'invite_created', 'group_invite', rows[0].id);
+    await this.appendActivity(
+      this.pool,
+      roomId,
+      userId,
+      'invite_created',
+      'group_invite',
+      rows[0].id,
+    );
     await this.groupRoomsEvents.publishToRoom(roomId, {
       type: 'invite_created',
       roomId,
@@ -531,7 +558,11 @@ export class GroupRoomsService implements OnModuleInit {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      const inviteRes = await client.query<{ id: string; room_id: string; created_by: string | null }>(
+      const inviteRes = await client.query<{
+        id: string;
+        room_id: string;
+        created_by: string | null;
+      }>(
         `SELECT id, room_id, created_by
          FROM group_invite_links
          WHERE token = $1
@@ -585,11 +616,18 @@ export class GroupRoomsService implements OnModuleInit {
   }
 
   async rejectInvite(token: string) {
-    const { rowCount } = await this.pool.query('DELETE FROM group_invite_links WHERE token = $1', [token]);
+    const { rowCount } = await this.pool.query('DELETE FROM group_invite_links WHERE token = $1', [
+      token,
+    ]);
     return { success: true, deleted: (rowCount ?? 0) > 0 };
   }
 
-  async updateMemberRole(roomId: string, targetUserId: string, actorId: string, dto: UpdateGroupMemberRoleDto) {
+  async updateMemberRole(
+    roomId: string,
+    targetUserId: string,
+    actorId: string,
+    dto: UpdateGroupMemberRoleDto,
+  ) {
     const actorRole = await this.ensureRole(this.pool, roomId, actorId, 'owner');
     if (actorRole !== 'owner') {
       throw new ForbiddenException('Только владелец комнаты может менять роли');
@@ -610,9 +648,17 @@ export class GroupRoomsService implements OnModuleInit {
        RETURNING room_id AS "roomId", user_id AS "userId", role, joined_at AS "joinedAt"`,
       [dto.role, roomId, targetUserId],
     );
-    await this.appendActivity(this.pool, roomId, actorId, 'member_role_changed', 'group_member', targetUserId, {
-      role: dto.role,
-    });
+    await this.appendActivity(
+      this.pool,
+      roomId,
+      actorId,
+      'member_role_changed',
+      'group_member',
+      targetUserId,
+      {
+        role: dto.role,
+      },
+    );
     await this.groupRoomsEvents.publishToRoom(roomId, {
       type: 'member_role_changed',
       roomId,
@@ -636,7 +682,14 @@ export class GroupRoomsService implements OnModuleInit {
       'DELETE FROM group_members WHERE room_id = $1 AND user_id = $2',
       [roomId, targetUserId],
     );
-    await this.appendActivity(this.pool, roomId, actorId, 'member_removed', 'group_member', targetUserId);
+    await this.appendActivity(
+      this.pool,
+      roomId,
+      actorId,
+      'member_removed',
+      'group_member',
+      targetUserId,
+    );
     await this.groupRoomsEvents.publishToRoom(roomId, {
       type: 'member_removed',
       roomId,
@@ -826,7 +879,9 @@ export class GroupRoomsService implements OnModuleInit {
     const paymentMethod: 'cash' | 'card' =
       dto.paymentMethod === 'cash' && txType !== 'transfer' ? 'cash' : 'card';
     let cardId =
-      dto.cardId != null && Number.isFinite(Number(dto.cardId)) ? Math.trunc(Number(dto.cardId)) : null;
+      dto.cardId != null && Number.isFinite(Number(dto.cardId))
+        ? Math.trunc(Number(dto.cardId))
+        : null;
     if (!hasCardCol) {
       cardId = null;
     }
@@ -843,7 +898,9 @@ export class GroupRoomsService implements OnModuleInit {
 
     if (txType === 'transfer') {
       if (!hasCardCol || !hasTransferToCol) {
-        throw new BadRequestException('Перевод в комнате недоступен: нет колонок card_id / transfer_to_card_id');
+        throw new BadRequestException(
+          'Перевод в комнате недоступен: нет колонок card_id / transfer_to_card_id',
+        );
       }
       if (cardId == null || transferToCardId == null || cardId === transferToCardId) {
         throw new BadRequestException('Для перевода укажите две разные карты плательщика');
@@ -855,6 +912,12 @@ export class GroupRoomsService implements OnModuleInit {
     }
 
     const cur = dto.currencyCode ?? 'BYN';
+    const balanceUsesCard =
+      txType === 'transfer' || paymentMethod !== 'cash' ? cardId != null : false;
+    const shouldApplyCard = balanceUsesCard && (hasAffectsCol ? affectBalance : true);
+    if (shouldApplyCard && cardId != null && (txType === 'expense' || txType === 'transfer')) {
+      await this.transactionsService.assertCardHasSufficientFunds(cardId, dto.amount, cur);
+    }
     const cols: string[] = ['room_id', 'paid_by', 'created_by', 'category_id'];
     const vals: unknown[] = [roomId, paidBy, userId, dto.categoryId ?? null];
     if (hasCardCol) {
@@ -881,10 +944,10 @@ export class GroupRoomsService implements OnModuleInit {
     }
 
     const placeholders = vals.map((_, i) => `$${i + 1}`).join(', ');
-    const cardIdReturning = hasCardCol
-      ? 'card_id AS "cardId",'
-      : 'NULL::integer AS "cardId",';
-    const transferToReturning = hasTransferToCol ? 'transfer_to_card_id AS "transferToCardId",' : '';
+    const cardIdReturning = hasCardCol ? 'card_id AS "cardId",' : 'NULL::integer AS "cardId",';
+    const transferToReturning = hasTransferToCol
+      ? 'transfer_to_card_id AS "transferToCardId",'
+      : '';
     const typeReturning = hasTypeCol ? 'type,' : '';
     const affectsReturning = hasAffectsCol
       ? 'affects_card_balance AS "affectsCardBalance",'
@@ -920,12 +983,9 @@ export class GroupRoomsService implements OnModuleInit {
       vals,
     );
 
+    await this.addCategoryExampleFromTransaction(dto.categoryId ?? null, dto.title ?? null);
+
     const created = rows[0] as { id: string };
-    const balanceUsesCard =
-      txType === 'transfer' || paymentMethod !== 'cash'
-        ? cardId != null
-        : false;
-    const shouldApplyCard = balanceUsesCard && (hasAffectsCol ? affectBalance : true);
     if (shouldApplyCard && cardId != null && txType === 'transfer' && transferToCardId != null) {
       try {
         await this.transactionsService.applyTransferBetweenCards(
@@ -1080,8 +1140,7 @@ export class GroupRoomsService implements OnModuleInit {
       nextCardId = null;
     }
 
-    const nextCategoryId =
-      dto.categoryId !== undefined ? dto.categoryId : ex.category_id;
+    const nextCategoryId = dto.categoryId !== undefined ? dto.categoryId : ex.category_id;
     const nextAmount = dto.amount ?? parseFloat(String(ex.amount));
     const nextCurrency = dto.currencyCode ?? ex.currency_code ?? 'BYN';
     const nextTitle = dto.title ?? ex.title;
@@ -1096,7 +1155,9 @@ export class GroupRoomsService implements OnModuleInit {
 
     if (nextType === 'transfer') {
       if (!hasCardCol || !hasTransferToCol) {
-        throw new BadRequestException('Перевод в комнате недоступен: нет колонок card_id / transfer_to_card_id');
+        throw new BadRequestException(
+          'Перевод в комнате недоступен: нет колонок card_id / transfer_to_card_id',
+        );
       }
       if (nextCardId == null || nextTransferTo == null || nextCardId === nextTransferTo) {
         throw new BadRequestException('Для перевода укажите две разные карты плательщика');
@@ -1117,11 +1178,7 @@ export class GroupRoomsService implements OnModuleInit {
     const oldPaymentMethod: 'cash' | 'card' = existingPayment;
 
     if (oldAffects && oldPayer) {
-      if (
-        existingType === 'transfer' &&
-        ex.card_id != null &&
-        ex.transfer_to_card_id != null
-      ) {
+      if (existingType === 'transfer' && ex.card_id != null && ex.transfer_to_card_id != null) {
         await this.transactionsService.applyTransferBetweenCards(
           Number(ex.card_id),
           Number(ex.transfer_to_card_id),
@@ -1129,11 +1186,7 @@ export class GroupRoomsService implements OnModuleInit {
           oldCur,
           -1,
         );
-      } else if (
-        ex.card_id != null &&
-        existingType !== 'transfer' &&
-        oldPaymentMethod !== 'cash'
-      ) {
+      } else if (ex.card_id != null && existingType !== 'transfer' && oldPaymentMethod !== 'cash') {
         await this.transactionsService.reversePersonalCardForGroupTx(
           oldPayer,
           Number(ex.card_id),
@@ -1181,9 +1234,7 @@ export class GroupRoomsService implements OnModuleInit {
     const roomSlot = p + 1;
     params.push(transactionId, roomId);
 
-    const cardIdReturning = hasCardCol
-      ? 'card_id AS "cardId",'
-      : 'NULL::integer AS "cardId",';
+    const cardIdReturning = hasCardCol ? 'card_id AS "cardId",' : 'NULL::integer AS "cardId",';
     const transferToReturning = hasTransferToCol
       ? 'transfer_to_card_id AS "transferToCardId",'
       : '';
@@ -1220,6 +1271,8 @@ export class GroupRoomsService implements OnModuleInit {
          updated_at AS "updatedAt"`,
       params,
     );
+
+    await this.addCategoryExampleFromTransaction(nextCategoryId ?? null, nextTitle ?? null);
 
     const balanceUsesCard =
       nextType === 'transfer' || nextPaymentMethod !== 'cash' ? nextCardId != null : false;
@@ -1277,7 +1330,9 @@ export class GroupRoomsService implements OnModuleInit {
       : 'TRUE AS affects_card_balance';
     const hasTransferToCol = await this.ensureGroupTxTransferToCardColumn();
     const hasPaymentCol = await this.ensureGroupTxPaymentMethodColumn();
-    const transferSel = hasTransferToCol ? 'transfer_to_card_id' : 'NULL::integer AS transfer_to_card_id';
+    const transferSel = hasTransferToCol
+      ? 'transfer_to_card_id'
+      : 'NULL::integer AS transfer_to_card_id';
     const paymentSel = hasPaymentCol
       ? `COALESCE(NULLIF(TRIM(payment_method::text), ''), 'card') AS payment_method`
       : `'card'::text AS payment_method`;
@@ -1305,7 +1360,11 @@ export class GroupRoomsService implements OnModuleInit {
     }
     if (existing.affects_card_balance && existing.paid_by) {
       const txType: 'expense' | 'revenue' | 'transfer' =
-        existing.type === 'revenue' ? 'revenue' : existing.type === 'transfer' ? 'transfer' : 'expense';
+        existing.type === 'revenue'
+          ? 'revenue'
+          : existing.type === 'transfer'
+            ? 'transfer'
+            : 'expense';
       const delPayment: 'cash' | 'card' =
         String(existing.payment_method || 'card').toLowerCase() === 'cash' ? 'cash' : 'card';
       if (
@@ -1351,3 +1410,4 @@ export class GroupRoomsService implements OnModuleInit {
     return { success: (rowCount ?? 0) > 0 };
   }
 }
+

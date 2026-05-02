@@ -29,6 +29,16 @@ export class PredictionCacheService {
 
   constructor(private readonly redis: RedisService) {}
 
+  private keySuffix(redisKey: string): string {
+    const parts = redisKey.split(':');
+    return parts.slice(Math.max(0, parts.length - 3)).join(':');
+  }
+
+  private entryStats(entry: CacheEntry | null | undefined): string {
+    if (!entry) return 'entry=null';
+    return `uses=${entry.usesCount ?? 0} accepted=${entry.acceptedCount ?? 0} rejected=${entry.rejectedCount ?? 0} lastFeedbackAt=${entry.lastFeedbackAt ?? '-'} primaryId=${entry.prediction?.primary?.category_id ?? ''} source=${entry.prediction?.source ?? ''}`;
+  }
+
   buildKey(
     modelVersion: string,
     normalizedText: string,
@@ -36,7 +46,11 @@ export class PredictionCacheService {
   ): string {
     const scope = [context.userId || 'anon', context.roomId || 'global'].join(':');
     const hash = createHash('sha1').update(normalizedText).digest('hex').slice(0, 16);
-    return `${KEY_PREFIX}${modelVersion}:${scope}:${hash}`;
+    const key = `${KEY_PREFIX}${modelVersion}:${scope}:${hash}`;
+    this.logger.log(
+      `[redis-cache] buildKey model=${modelVersion} scope=${scope} hash=${hash} suffix=${this.keySuffix(key)}`,
+    );
+    return key;
   }
 
   private parseEntry(raw: string): CacheEntry | null {
@@ -69,19 +83,37 @@ export class PredictionCacheService {
    * Для feedback нужен ключ, который реально есть в Redis.
    */
   private async resolveKeyForFeedback(redisKey: string): Promise<string | null> {
+    this.logger.log(
+      `[redis-cache] resolveKeyForFeedback start suffix=${this.keySuffix(redisKey)}`,
+    );
     const direct = await this.redis.get(redisKey);
-    if (direct) return redisKey;
+    if (direct) {
+      this.logger.log(
+        `[redis-cache] resolveKeyForFeedback direct-hit suffix=${this.keySuffix(redisKey)}`,
+      );
+      return redisKey;
+    }
 
     const pattern = this.getHistoricalPattern(redisKey);
     const client = this.redis.getClient();
-    if (!pattern || !client) return null;
+    if (!pattern || !client) {
+      this.logger.warn(
+        `[redis-cache] resolveKeyForFeedback no-pattern-or-client suffix=${this.keySuffix(redisKey)} pattern=${pattern ?? 'null'} client=${client ? 'yes' : 'no'}`,
+      );
+      return null;
+    }
+    this.logger.log(
+      `[redis-cache] resolveKeyForFeedback scan pattern=${pattern}`,
+    );
 
     let cursor = '0';
     let bestKey: string | null = null;
     let bestScore = -1;
+    let scanned = 0;
     do {
       const [nextCursor, keys] = await client.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
       cursor = nextCursor;
+      scanned += keys.length;
       for (const k of keys) {
         const raw = await this.redis.get(k);
         if (!raw) continue;
@@ -95,6 +127,9 @@ export class PredictionCacheService {
       }
     } while (cursor !== '0');
 
+    this.logger.log(
+      `[redis-cache] resolveKeyForFeedback done scanned=${scanned} bestScore=${bestScore} bestSuffix=${bestKey ? this.keySuffix(bestKey) : 'none'}`,
+    );
     return bestKey;
   }
 
@@ -102,12 +137,22 @@ export class PredictionCacheService {
   private async gatherAllEntriesForIdentity(redisKey: string): Promise<CacheEntry[]> {
     const pattern = this.getHistoricalPattern(redisKey);
     const client = this.redis.getClient();
-    if (!pattern || !client) return [];
+    if (!pattern || !client) {
+      this.logger.warn(
+        `[redis-cache] gatherAllEntriesForIdentity skip suffix=${this.keySuffix(redisKey)} pattern=${pattern ?? 'null'} client=${client ? 'yes' : 'no'}`,
+      );
+      return [];
+    }
+    this.logger.log(
+      `[redis-cache] gatherAllEntriesForIdentity start pattern=${pattern}`,
+    );
     const out: CacheEntry[] = [];
     let cursor = '0';
+    let scanned = 0;
     do {
       const [nextCursor, keys] = await client.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
       cursor = nextCursor;
+      scanned += keys.length;
       for (const key of keys) {
         const raw = await this.redis.get(key);
         if (!raw) continue;
@@ -115,6 +160,9 @@ export class PredictionCacheService {
         if (e) out.push(e);
       }
     } while (cursor !== '0');
+    this.logger.log(
+      `[redis-cache] gatherAllEntriesForIdentity done scanned=${scanned} parsed=${out.length} suffix=${this.keySuffix(redisKey)}`,
+    );
     return out;
   }
 
@@ -153,9 +201,23 @@ export class PredictionCacheService {
   }
 
   async getPrediction(redisKey: string): Promise<CacheEntry | null> {
+    this.logger.log(`[redis-cache] getPrediction suffix=${this.keySuffix(redisKey)} start`);
     const raw = await this.redis.get(redisKey);
-    if (!raw) return null;
-    return this.parseEntry(raw);
+    if (!raw) {
+      this.logger.log(`[redis-cache] getPrediction suffix=${this.keySuffix(redisKey)} miss`);
+      return null;
+    }
+    const parsed = this.parseEntry(raw);
+    if (!parsed) {
+      this.logger.warn(
+        `[redis-cache] getPrediction suffix=${this.keySuffix(redisKey)} parse-failed`,
+      );
+      return null;
+    }
+    this.logger.log(
+      `[redis-cache] getPrediction suffix=${this.keySuffix(redisKey)} hit ${this.entryStats(parsed)}`,
+    );
+    return parsed;
   }
 
   async setPrediction(
@@ -176,32 +238,63 @@ export class PredictionCacheService {
       lastFeedbackAt: merged.lastFeedbackAt,
     };
     this.logger.log(
-      `setPrediction key=${redisKey} sources=${all.length} usesCount=${merged.usesCount} acceptedCount=${merged.acceptedCount} rejectedCount=${merged.rejectedCount}`,
+      `[redis-cache] setPrediction suffix=${this.keySuffix(redisKey)} ttl=${ttlSeconds}s sources=${all.length} merged(uses=${merged.usesCount},accepted=${merged.acceptedCount},rejected=${merged.rejectedCount}) newPrimary=${prediction.primary?.category_id ?? ''} source=${prediction.source}`,
     );
     await this.redis.set(redisKey, JSON.stringify(entry), ttlSeconds);
   }
 
   async touchPrediction(redisKey: string, ttlSeconds: number = DEFAULT_TTL_SEC): Promise<void> {
+    this.logger.log(
+      `[redis-cache] touchPrediction suffix=${this.keySuffix(redisKey)} ttl=${ttlSeconds}s start`,
+    );
     const raw = await this.redis.get(redisKey);
-    if (!raw) return;
+    if (!raw) {
+      this.logger.log(
+        `[redis-cache] touchPrediction suffix=${this.keySuffix(redisKey)} skip=missing`,
+      );
+      return;
+    }
     const entry = this.parseEntry(raw);
-    if (!entry) return;
+    if (!entry) {
+      this.logger.warn(
+        `[redis-cache] touchPrediction suffix=${this.keySuffix(redisKey)} skip=parse-failed`,
+      );
+      return;
+    }
     entry.lastUsedAt = new Date().toISOString();
     entry.usesCount = (entry.usesCount || 0) + 1;
     this.logger.log(
-      `touchPrediction key=${redisKey} usesCount=${entry.usesCount} acceptedCount=${entry.acceptedCount ?? 0} rejectedCount=${entry.rejectedCount ?? 0}`,
+      `[redis-cache] touchPrediction suffix=${this.keySuffix(redisKey)} ${this.entryStats(entry)}`,
     );
     await this.redis.set(redisKey, JSON.stringify(entry), ttlSeconds);
   }
 
   async updateFeedback(redisKey: string, isAccepted: boolean): Promise<void> {
+    this.logger.log(
+      `[redis-cache] updateFeedback requestedSuffix=${this.keySuffix(redisKey)} isAccepted=${isAccepted} start`,
+    );
     const resolvedKey = await this.resolveKeyForFeedback(redisKey);
-    if (!resolvedKey) return;
+    if (!resolvedKey) {
+      this.logger.warn(
+        `[redis-cache] updateFeedback requestedSuffix=${this.keySuffix(redisKey)} skip=resolve-failed`,
+      );
+      return;
+    }
 
     const raw = await this.redis.get(resolvedKey);
-    if (!raw) return;
+    if (!raw) {
+      this.logger.warn(
+        `[redis-cache] updateFeedback resolvedSuffix=${this.keySuffix(resolvedKey)} skip=missing`,
+      );
+      return;
+    }
     const entry = this.parseEntry(raw);
-    if (!entry) return;
+    if (!entry) {
+      this.logger.warn(
+        `[redis-cache] updateFeedback resolvedSuffix=${this.keySuffix(resolvedKey)} skip=parse-failed`,
+      );
+      return;
+    }
     const now = new Date().toISOString();
     entry.lastFeedbackAt = now;
     /** Одно сохранение транзакции = одно использование предикта для feedback (не путать с touchPrediction). */
@@ -212,9 +305,12 @@ export class PredictionCacheService {
       entry.rejectedCount = (entry.rejectedCount || 0) + 1;
     }
     this.logger.log(
-      `updateFeedback key=${resolvedKey} requestedKey=${redisKey} isAccepted=${isAccepted} usesCount=${entry.usesCount} acceptedCount=${entry.acceptedCount} rejectedCount=${entry.rejectedCount}`,
+      `[redis-cache] updateFeedback requestedSuffix=${this.keySuffix(redisKey)} resolvedSuffix=${this.keySuffix(resolvedKey)} ${this.entryStats(entry)}`,
     );
     const ttl = await this.redis.ttl(resolvedKey);
+    this.logger.log(
+      `[redis-cache] updateFeedback resolvedSuffix=${this.keySuffix(resolvedKey)} currentTtl=${ttl}s`,
+    );
     await this.redis.set(resolvedKey, JSON.stringify(entry), ttl > 0 ? ttl : DEFAULT_TTL_SEC);
   }
 
@@ -226,8 +322,15 @@ export class PredictionCacheService {
     if (total === 0) return false;
     if (accepted >= 3) {
       const accuracy = accepted / total;
-      return accuracy >= 0.7;
+      const ok = accuracy >= 0.7;
+      this.logger.log(
+        `[redis-cache] isGoodQuality accepted=${accepted} rejected=${rejected} total=${total} accuracy=${accuracy.toFixed(3)} result=${ok}`,
+      );
+      return ok;
     }
+    this.logger.log(
+      `[redis-cache] isGoodQuality accepted=${accepted} rejected=${rejected} total=${total} accuracy=n/a result=false`,
+    );
     return false;
   }
 
@@ -235,26 +338,41 @@ export class PredictionCacheService {
   isBadQuality(entry: CacheEntry): boolean {
     const rejected = entry.rejectedCount ?? 0;
     const accepted = entry.acceptedCount ?? 0;
-    return rejected >= BAD_ACCURACY_REJECTED_THRESHOLD && accepted === BAD_ACCURACY_ACCEPTED_ZERO;
+    const bad =
+      rejected >= BAD_ACCURACY_REJECTED_THRESHOLD && accepted === BAD_ACCURACY_ACCEPTED_ZERO;
+    this.logger.log(
+      `[redis-cache] isBadQuality accepted=${accepted} rejected=${rejected} threshold=${BAD_ACCURACY_REJECTED_THRESHOLD} result=${bad}`,
+    );
+    return bad;
   }
 
   async deletePrediction(redisKey: string): Promise<void> {
+    this.logger.log(`[redis-cache] deletePrediction suffix=${this.keySuffix(redisKey)}`);
     await this.redis.del(redisKey);
   }
 
   async flushCacheByPrefix(prefix: string): Promise<number> {
+    this.logger.log(`[redis-cache] flushCacheByPrefix start prefix=${prefix}`);
     const client = this.redis.getClient();
-    if (!client) return 0;
+    if (!client) {
+      this.logger.warn(`[redis-cache] flushCacheByPrefix skip=no-client prefix=${prefix}`);
+      return 0;
+    }
     let cursor = '0';
     let deleted = 0;
+    let scanned = 0;
     do {
       const [nextCursor, keys] = await client.scan(cursor, 'MATCH', prefix, 'COUNT', 200);
       cursor = nextCursor;
+      scanned += keys.length;
       if (keys.length > 0) {
         await client.del(...keys);
         deleted += keys.length;
       }
     } while (cursor !== '0');
+    this.logger.log(
+      `[redis-cache] flushCacheByPrefix done prefix=${prefix} scanned=${scanned} deleted=${deleted}`,
+    );
     return deleted;
   }
 }

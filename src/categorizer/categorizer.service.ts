@@ -85,6 +85,32 @@ export class CategorizerService {
       .replace(/\s+/g, ' ');
   }
 
+  private serializePrediction(prediction: Prediction): string {
+    const p = prediction?.primary;
+    const alternatives = (prediction?.alternatives ?? []).slice(0, 3).map((a) => ({
+      id: a.category_id,
+      name: a.category_name,
+      conf: Number(a.confidence ?? 0),
+    }));
+    return JSON.stringify({
+      source: prediction?.source,
+      needs_confirmation: prediction?.needs_confirmation,
+      primary: {
+        id: p?.category_id ?? '',
+        name: p?.category_name ?? '',
+        confidence: Number(p?.confidence ?? 0),
+        icon: p?.category_icon ?? '',
+        color: p?.category_color ?? '',
+      },
+      alternativesCount: prediction?.alternatives?.length ?? 0,
+      alternatives,
+    });
+  }
+
+  private logPredictionStage(stage: string, prediction: Prediction): void {
+    this.logger.log(`[categorizer][stage=${stage}] ${this.serializePrediction(prediction)}`);
+  }
+
   private handleError(error: AxiosError, context: string): never {
     this.logger.error(`${context}: ${error.message}`);
 
@@ -470,6 +496,7 @@ export class CategorizerService {
 
     const cached = await this.predictionCache.getPrediction(redisKey);
     if (cached) {
+      this.logPredictionStage('cache_read', cached.prediction);
       if (this.predictionCache.isBadQuality(cached)) {
         this.logger.warn(`[categorizer] cache: bad quality — invalidate and recompute key=...${redisKey.slice(-24)}`);
         await this.predictionCache.deletePrediction(redisKey);
@@ -477,6 +504,7 @@ export class CategorizerService {
         this.logger.log(
           `[categorizer] cache: HIT trusted id=${cached.prediction.primary?.category_id ?? 'none'} source=${cached.prediction.source}`,
         );
+        this.logPredictionStage('cache_hit_return', cached.prediction);
         await this.predictionCache.touchPrediction(redisKey, CACHE_TTL_SEC);
         return { ...cached.prediction, predictionKey: redisKey };
       } else {
@@ -487,15 +515,26 @@ export class CategorizerService {
     }
 
     try {
-      let prediction = this.sanitizePrediction(await this.callMlPredict(text));
+      const mlRaw = await this.callMlPredict(text);
+      this.logPredictionStage('ml_raw', mlRaw);
+
+      let prediction = this.sanitizePrediction(mlRaw);
+      this.logPredictionStage('after_sanitize', prediction);
+
       prediction = await this.clampPredictionToGroupRoom(prediction, context.roomId);
+      this.logPredictionStage('after_room_clamp', prediction);
+
       prediction = await this.enrichUnknownWithLexicon(text, context, prediction);
+      this.logPredictionStage('after_lexicon', prediction);
+
       const outcome = prediction.primary.category_id ? 'known' : 'unknown';
       this.logger.log(
         `[categorizer] predict done outcome=${outcome} source=${prediction.source} id=${prediction.primary.category_id || '(empty)'} name=${prediction.primary.category_name} conf=${prediction.primary.confidence}`,
       );
       const ttl = prediction.primary.category_id ? CACHE_TTL_SEC : CACHE_TTL_UNKNOWN_SEC;
       await this.predictionCache.setPrediction(redisKey, prediction, ttl);
+      this.logPredictionStage('cache_write', prediction);
+      this.logPredictionStage('response_return', prediction);
       return { ...prediction, predictionKey: redisKey };
     } catch (error) {
       if (error instanceof HttpException) throw error;
