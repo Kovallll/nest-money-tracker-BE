@@ -79,7 +79,7 @@ export class StatisticsService {
       new Date(year, m, 1).toLocaleString(locale, { month: 'short' }),
     );
 
-    const transactions = await this.fetchNetTransactions(year, lastMonthIndex, userId, roomId);
+    const transactions = await this.fetchCategoryTransactions(year, lastMonthIndex, userId, roomId);
     const categories = await this.fetchCategoriesMap(userId, roomId);
 
     const byCategory = this.groupExpensesByCategoryAndMonth(transactions, year, lastMonthIndex);
@@ -93,7 +93,7 @@ export class StatisticsService {
         labels,
         datasets: [
           {
-            label: 'Expenses',
+            label: 'Amount',
             data: monthly.map((v) => +v.toFixed(2)),
             borderColor: this.palette[charts.length % this.palette.length],
             backgroundColor: 'transparent',
@@ -292,7 +292,7 @@ export class StatisticsService {
     }));
   }
 
-  private async fetchNetTransactions(
+  private async fetchCategoryTransactions(
     year: number,
     lastMonthIndex: number,
     userId?: string,
@@ -312,7 +312,7 @@ export class StatisticsService {
                 COALESCE(NULLIF(TRIM(gt.currency_code::text), ''), 'BYN') AS currency_code
          FROM group_transactions gt
          WHERE gt.room_id = $1::uuid AND gt.date >= $2 AND gt.date <= $3
-           AND COALESCE(gt.type::text, 'expense') = 'expense'`,
+           AND COALESCE(gt.type::text, 'expense') IN ('expense', 'revenue')`,
         [roomId, start, end],
       );
       return rows.map((r) => ({
@@ -324,10 +324,10 @@ export class StatisticsService {
     const sql = userId
       ? `SELECT category_id, date, amount
          FROM transactions
-         WHERE type = 'expense' AND user_id = $1 AND date >= $2 AND date <= $3`
+         WHERE type IN ('expense', 'revenue') AND user_id = $1 AND date >= $2 AND date <= $3`
       : `SELECT category_id, date, amount
          FROM transactions
-         WHERE type = 'expense' AND date >= $1 AND date <= $2`;
+         WHERE type IN ('expense', 'revenue') AND date >= $1 AND date <= $2`;
     const params = userId ? [userId, start, end] : [start, end];
     const { rows } = await this.pool.query(sql, params);
     return rows.map((r) => ({
